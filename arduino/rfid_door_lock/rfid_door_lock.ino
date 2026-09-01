@@ -4,13 +4,10 @@
 #define RST_PIN 9
 #define SS_PIN 10
 #define RELAY_PIN 8
+#define EXIT_BTN_PIN 3
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-// รายชื่อ UID บัตรที่อนุญาต (4 ไบต์ต่อใบ) เพิ่มบัตรใหม่ได้โดยเติมแถวในนี้
-// TODO: บัตรใบที่ 2 มี 2 ค่าที่ไม่ตรงกันจากโค้ดเดิม (C40EB306 / C6796C06)
-// ใส่ไว้ทั้งคู่ชั่วคราว — เปิด Serial Monitor แล้วสแกนบัตรจริงเพื่อดูค่าที่ถูกต้อง
-// แล้วลบแถวที่ไม่ใช่ทิ้ง
 const byte authorizedUIDs[][4] = {
   {0xA7, 0x56, 0x5B, 0x06},
   {0xC4, 0x0E, 0xB3, 0x06},
@@ -21,11 +18,12 @@ const byte numAuthorizedUIDs = sizeof(authorizedUIDs) / sizeof(authorizedUIDs[0]
 void setup() {
   Serial.begin(9600);
   SPI.begin();
-  mfrc522.PCD_Init(); // เริ่มต้นการทำงานของโมดูล
+  mfrc522.PCD_Init();
 
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH); // ล็อคประตูไว้ (Active Low)
 
+  pinMode(EXIT_BTN_PIN, INPUT_PULLUP);
   Serial.println("System Ready. Please scan your card.");
 }
 
@@ -45,7 +43,18 @@ void printUID(const MFRC522::Uid &uid) {
 }
 
 void loop() {
-  // ตรวจสอบว่ามีบัตรมาทาบหรือไม่
+  // 1. ตรวจสอบการกดปุ่ม Exit ด้านใน
+  if (digitalRead(EXIT_BTN_PIN) == LOW) {
+    Serial.println("Exit Button Pressed! Unlocking...");
+    digitalWrite(RELAY_PIN, LOW);  
+    delay(3000);                   
+    digitalWrite(RELAY_PIN, HIGH); 
+    Serial.println("Locked.");
+    delay(500); 
+    return; // ข้ามการเช็ค RFID ในรอบนี้ไปก่อน
+  }
+
+  // 2. ตรวจสอบว่ามีบัตรมาทาบหรือไม่
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
     return;
   }
@@ -56,24 +65,18 @@ void loop() {
 
   if (isAuthorized(mfrc522.uid)) {
     Serial.println("Access Granted! Unlocking...");
-    digitalWrite(RELAY_PIN, LOW); // สั่ง Relay ปลดล็อค
-
-    delay(3000); // เปิดประตูค้างไว้ 3 วินาที
-
-    digitalWrite(RELAY_PIN, HIGH); // สั่งล็อคประตูเหมือนเดิม
+    digitalWrite(RELAY_PIN, LOW); 
+    delay(3000); 
+    digitalWrite(RELAY_PIN, HIGH); 
     Serial.println("Locked.");
   } else {
     Serial.println("Access Denied!");
-    delay(1000); // หน่วงเวลาเฉพาะตอนสแกนไม่ผ่าน
-  }
+    delay(1000); 
+  } // ปิดวงเล็บของบล็อก else ให้เรียบร้อย
 
-  // หยุดการสื่อสารกับบัตรและล้างสถานะการเข้ารหัส เพื่อเตรียมรับรอบต่อไป
+  // หยุดการสื่อสารกับบัตร
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
-
-  // รีเซ็ตตัวอ่าน RC522 ทั้งหมดกลับไปเหมือนตอนเพิ่งบูตเครื่อง (คำสั่งเดียวกับใน setup())
-  // การตัดแค่สายอากาศ (AntennaOff/On) ไม่พอ เพราะรีจิสเตอร์อื่นๆ ของตัวอ่านยังค้าง
-  // อยู่ในสถานะเดิมของรอบก่อนหน้า ทำให้บางครั้งบัตรใบเดิมสแกนซ้ำไม่ติด
   mfrc522.PCD_Init();
 
   Serial.println("System Ready. Please scan your card.");
