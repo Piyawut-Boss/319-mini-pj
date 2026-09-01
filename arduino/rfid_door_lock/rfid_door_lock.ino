@@ -7,12 +7,11 @@
 #define RELAY_PIN 8
 
 #define EXIT_BTN_PIN 3
-#define REG_BTN_PIN  4  // ปุ่มกดเข้า Mode Register
-#define SET_BTN_PIN  5  // ปุ่มกดกลับ Mode Idle
+#define REG_BTN_PIN  4  
+#define SET_BTN_PIN  5  
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-// กำหนดสถานะ Mode ของระบบ
 enum SystemMode {
   MODE_IDLE,
   MODE_REGISTER
@@ -21,12 +20,12 @@ SystemMode currentMode = MODE_IDLE;
 
 #define MAX_CARDS 20
 
-// รายชื่อ UID เริ่มต้น (เก็บลง EEPROM ตอนเปิดเครื่องครั้งแรก)
+// กำหนด UID เริ่มต้น (คุณสามารถเพิ่มหรือลดจำนวนในนี้ได้ตามต้องการ)
 const byte defaultUIDs[][4] = {
-  {0xA7, 0x56, 0x5B, 0x06},
-  {0xC4, 0x0E, 0xB3, 0x06},
-  {0xC6, 0x79, 0x6C, 0x06}
+  {0xA7, 0x56, 0x5B, 0x06}
 };
+// คำนวณจำนวนการ์ดเริ่มต้นอัตโนมัติจากขนาดอาเรย์
+const byte numDefaultUIDs = sizeof(defaultUIDs) / sizeof(defaultUIDs[0]);
 
 void setup() {
   Serial.begin(9600);
@@ -34,7 +33,7 @@ void setup() {
   mfrc522.PCD_Init();
 
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH); // ล็อคประตูไว้ (Active Low)
+  digitalWrite(RELAY_PIN, HIGH); 
 
   pinMode(EXIT_BTN_PIN, INPUT_PULLUP);
   pinMode(REG_BTN_PIN, INPUT_PULLUP);
@@ -42,16 +41,24 @@ void setup() {
 
   // ตรวจสอบ EEPROM หากยังไม่เคยบันทึก ให้โหลดค่าเริ่มต้น
   if (EEPROM.read(0) == 255 || EEPROM.read(0) > MAX_CARDS) {
-    EEPROM.write(0, 3);
-    for (int i = 0; i < 3; i++) {
-      for (int j = 0; j < 4; j++) {
-        EEPROM.write(1 + (i * 4) + j, defaultUIDs[i][j]);
-      }
-    }
+    resetEEPROMToDefault();
   }
 
   Serial.println("=== SYSTEM INITIALIZED ===");
+  Serial.print("Total cards in memory: ");
+  Serial.println(EEPROM.read(0));
   Serial.println("Current Mode: IDLE (Normal Operation)");
+}
+
+// ฟังก์ชันโหลดค่าเริ่มต้นลง EEPROM แบบคำนวณขนาดอัตโนมัติ
+void resetEEPROMToDefault() {
+  EEPROM.write(0, numDefaultUIDs); // บันทึกจำนวนตามจริง
+  for (int i = 0; i < numDefaultUIDs; i++) {
+    for (int j = 0; j < 4; j++) {
+      EEPROM.write(1 + (i * 4) + j, defaultUIDs[i][j]);
+    }
+  }
+  Serial.println(">>> EEPROM Reset to Default UIDs! <<<");
 }
 
 bool isAuthorized(const MFRC522::Uid &uid) {
@@ -97,7 +104,8 @@ void registerNewCard(const MFRC522::Uid &uid) {
   
   Serial.print("Register Success! Saved UID: ");
   printUID(uid);
-  Serial.println();
+  Serial.print(" | Total cards now: ");
+  Serial.println(EEPROM.read(0));
 }
 
 void printUID(const MFRC522::Uid &uid) {
@@ -116,17 +124,33 @@ void unlockDoor() {
 }
 
 void loop() {
-  // 1. ตรวจสอบการกดปุ่มเพื่อเปลี่ยน Mode
+  // 1. กดปุ่ม REG_BTN ค้างไว้ 5 วินาที เพื่อ Clear Memory (Factory Reset) กลับมาเป็นค่าเริ่มต้น
   if (digitalRead(REG_BTN_PIN) == LOW) {
-    currentMode = MODE_REGISTER;
-    Serial.println("\n>>> [SWITCH MODE] -> REGISTER MODE (Waiting for new card...) <<<");
-    delay(500); // กันกดเบิ้ล (Debounce)
+    unsigned long pressTime = millis();
+    bool isHeld = true;
+    
+    while (digitalRead(REG_BTN_PIN) == LOW) {
+      if (millis() - pressTime > 5000) { 
+        resetEEPROMToDefault();
+        Serial.println(">>> MEMORY CLEARED & RESET TO DEFAULT SUCCESSFUL! <<<");
+        delay(1000);
+        isHeld = false;
+        break;
+      }
+    }
+
+    if (isHeld && (millis() - pressTime <= 5000)) {
+      currentMode = MODE_REGISTER;
+      Serial.println("\n>>> [SWITCH MODE] -> REGISTER MODE (Waiting for new card...) <<<");
+      delay(3000); 
+    }
   }
 
+  // 2. กดปุ่ม Set เพื่อกลับสู่ Mode Idle
   if (digitalRead(SET_BTN_PIN) == LOW) {
     currentMode = MODE_IDLE;
     Serial.println("\n>>> [SWITCH MODE] -> IDLE MODE (Normal Operation) <<<");
-    delay(500); // Debounce
+    delay(500); 
   }
 
   // ปุ่ม Exit กดเปิดจากด้านในได้ตลอดเวลา
@@ -137,7 +161,7 @@ void loop() {
     return;
   }
 
-  // 2. ตรวจสอบการทาบบัตร RFID (ทำงานแยกตาม Mode ปัจจุบัน)
+  // 3. อ่านบัตรตาม Mode ปัจจุบัน
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
     return;
   }
@@ -165,7 +189,6 @@ void loop() {
       break;
   }
 
-  // ล้างสถานะการอ่านบัตรเพื่อเตรียมรับรอบถัดไป
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
   mfrc522.PCD_Init();
