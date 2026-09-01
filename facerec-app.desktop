@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ลงทะเบียนใบหน้า - Access Control
+Comment=เปิดโปรแกรมลงทะเบียนใบหน้าและ RFID
+Exec=/home/jocasta/facerec/venv/bin/python3 /home/jocasta/facerec/app.py
+Icon=camera-web
+Terminal=false
+Categories=Utility;

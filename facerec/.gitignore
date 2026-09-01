@@ -1,0 +1,13 @@
+# runtime data generated on the deployed Pi — never commit these
+# (personal photos, trained model, admin password hash, per-device state)
+dataset/
+people.json
+trainer.yml
+labels.json
+admin.json
+settings.json
+.app.lock
+
+__pycache__/
+*.pyc
+venv/
