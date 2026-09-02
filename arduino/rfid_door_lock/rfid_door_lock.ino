@@ -160,6 +160,13 @@ void handleSerialCommands() {
         currentMode = MODE_IDLE;
         Serial.println("\n>>> [PI] -> IDLE MODE (Normal Operation) <<<");
         Serial.println("MODE:IDLE");
+      } else if (serialLine == "CLEAR") {
+        // ล้างบัตรทั้งหมดออกจริงๆ (ต่างจาก factory reset ที่ยังเหลือบัตร default 1 ใบ)
+        EEPROM.write(0, 0);
+        currentMode = MODE_IDLE;
+        Serial.println("\n>>> [PI] -> CLEARED ALL CARDS <<<");
+        Serial.println("CLEARED:0");
+        Serial.println("MODE:IDLE");
       }
       serialLine = "";
     } else if (c != '\r') {
