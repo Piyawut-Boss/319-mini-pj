@@ -167,25 +167,19 @@ void loop() {
   handleSerialCommands();
 
   // 1. กดปุ่ม REG_BTN ค้างไว้ 5 วินาที เพื่อ Clear Memory (Factory Reset) กลับมาเป็นค่าเริ่มต้น
+  // (เหลือไว้แค่ฟังก์ชันกู้คืนฉุกเฉินนี้ — การเข้าโหมด Register ต้องสั่งผ่าน Pi เท่านั้น
+  // ปุ่มกดสั้นบนบอร์ดจะไม่เข้าโหมด Register ตรงๆ อีกต่อไป กัน EEPROM กับ people.json
+  // บน Pi ไม่ตรงกัน)
   if (digitalRead(REG_BTN_PIN) == LOW) {
     unsigned long pressTime = millis();
-    bool isHeld = true;
 
     while (digitalRead(REG_BTN_PIN) == LOW) {
       if (millis() - pressTime > 5000) {
         resetEEPROMToDefault();
         Serial.println(">>> MEMORY CLEARED & RESET TO DEFAULT SUCCESSFUL! <<<");
         delay(1000);
-        isHeld = false;
         break;
       }
-    }
-
-    if (isHeld && (millis() - pressTime <= 5000)) {
-      currentMode = MODE_REGISTER;
-      Serial.println("\n>>> [SWITCH MODE] -> REGISTER MODE (Waiting for new card...) <<<");
-      Serial.println("MODE:REGISTER");
-      delay(3000);
     }
   }
 
