@@ -27,6 +27,9 @@ const byte defaultUIDs[][4] = {
 // คำนวณจำนวนการ์ดเริ่มต้นอัตโนมัติจากขนาดอาเรย์
 const byte numDefaultUIDs = sizeof(defaultUIDs) / sizeof(defaultUIDs[0]);
 
+// บรรทัดคำสั่งที่กำลังอ่านมาจาก Pi ผ่าน Serial (สร้างทีละตัวอักษรจนเจอ '\n')
+String serialLine = "";
+
 void setup() {
   Serial.begin(9600);
   SPI.begin();
@@ -61,6 +64,17 @@ void resetEEPROMToDefault() {
   Serial.println(">>> EEPROM Reset to Default UIDs! <<<");
 }
 
+// hex string ของ UID (ตัวพิมพ์ใหญ่ ไม่มี space) ไว้ให้ Pi parse บรรทัดโปรโตคอลได้ง่าย
+String uidToHex(const MFRC522::Uid &uid) {
+  String s = "";
+  for (byte i = 0; i < uid.size; i++) {
+    if (uid.uidByte[i] < 0x10) s += "0";
+    s += String(uid.uidByte[i], HEX);
+  }
+  s.toUpperCase();
+  return s;
+}
+
 bool isAuthorized(const MFRC522::Uid &uid) {
   if (uid.size != 4) return false;
   byte totalCards = EEPROM.read(0);
@@ -86,12 +100,14 @@ void registerNewCard(const MFRC522::Uid &uid) {
 
   if (isAuthorized(uid)) {
     Serial.println("This card is already registered!");
+    Serial.println("DUPLICATE:" + uidToHex(uid));  // บรรทัดสำหรับ Pi parse
     return;
   }
 
   byte totalCards = EEPROM.read(0);
   if (totalCards >= MAX_CARDS) {
     Serial.println("EEPROM Full! Cannot register more cards.");
+    Serial.println("FULL");  // บรรทัดสำหรับ Pi parse
     return;
   }
 
@@ -101,11 +117,12 @@ void registerNewCard(const MFRC522::Uid &uid) {
   }
 
   EEPROM.write(0, totalCards + 1);
-  
+
   Serial.print("Register Success! Saved UID: ");
   printUID(uid);
   Serial.print(" | Total cards now: ");
   Serial.println(EEPROM.read(0));
+  Serial.println("REGISTERED:" + uidToHex(uid));  // บรรทัดสำหรับ Pi parse
 }
 
 void printUID(const MFRC522::Uid &uid) {
@@ -123,14 +140,39 @@ void unlockDoor() {
   Serial.println("Locked.");
 }
 
+// อ่านคำสั่งจาก Pi ทีละบรรทัด: "REGISTER" เข้าโหมดลงทะเบียน, "IDLE" กลับโหมดปกติ
+// (ทำงานคู่ขนานกับปุ่มจริงบนบอร์ด ไม่ได้แทนที่ — เผื่อ Pi ไม่ได้เชื่อมต่อ/ค้าง)
+void handleSerialCommands() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      serialLine.trim();
+      if (serialLine == "REGISTER") {
+        currentMode = MODE_REGISTER;
+        Serial.println("\n>>> [PI] -> REGISTER MODE (Waiting for new card...) <<<");
+        Serial.println("MODE:REGISTER");
+      } else if (serialLine == "IDLE") {
+        currentMode = MODE_IDLE;
+        Serial.println("\n>>> [PI] -> IDLE MODE (Normal Operation) <<<");
+        Serial.println("MODE:IDLE");
+      }
+      serialLine = "";
+    } else if (c != '\r') {
+      serialLine += c;
+    }
+  }
+}
+
 void loop() {
+  handleSerialCommands();
+
   // 1. กดปุ่ม REG_BTN ค้างไว้ 5 วินาที เพื่อ Clear Memory (Factory Reset) กลับมาเป็นค่าเริ่มต้น
   if (digitalRead(REG_BTN_PIN) == LOW) {
     unsigned long pressTime = millis();
     bool isHeld = true;
-    
+
     while (digitalRead(REG_BTN_PIN) == LOW) {
-      if (millis() - pressTime > 5000) { 
+      if (millis() - pressTime > 5000) {
         resetEEPROMToDefault();
         Serial.println(">>> MEMORY CLEARED & RESET TO DEFAULT SUCCESSFUL! <<<");
         delay(1000);
@@ -142,7 +184,8 @@ void loop() {
     if (isHeld && (millis() - pressTime <= 5000)) {
       currentMode = MODE_REGISTER;
       Serial.println("\n>>> [SWITCH MODE] -> REGISTER MODE (Waiting for new card...) <<<");
-      delay(3000); 
+      Serial.println("MODE:REGISTER");
+      delay(3000);
     }
   }
 
@@ -150,7 +193,8 @@ void loop() {
   if (digitalRead(SET_BTN_PIN) == LOW) {
     currentMode = MODE_IDLE;
     Serial.println("\n>>> [SWITCH MODE] -> IDLE MODE (Normal Operation) <<<");
-    delay(500); 
+    Serial.println("MODE:IDLE");
+    delay(500);
   }
 
   // ปุ่ม Exit กดเปิดจากด้านในได้ตลอดเวลา

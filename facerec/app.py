@@ -5,6 +5,8 @@ import time
 import fcntl
 import signal
 import hashlib
+import threading
+import queue
 import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -18,6 +20,11 @@ try:
 except ImportError:
     Picamera2 = None
 
+try:
+    import serial
+except ImportError:
+    serial = None
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(BASE, "dataset")
 DB_PATH = os.path.join(BASE, "people.json")
@@ -30,6 +37,9 @@ SETTINGS_PATH = os.path.join(BASE, "settings.json")
 
 # keep in sync with capture_faces.py / recognize.py
 ROTATE = None
+
+ARDUINO_PORT = "/dev/ttyACM0"
+ARDUINO_BAUD = 9600
 
 FACES_PER_PERSON = 20
 CONFIDENCE_THRESHOLD = 70  # LBPH distance: lower = better match
@@ -181,6 +191,55 @@ class OnScreenKeyboard(tk.Toplevel):
         self.entry_var.set(self.entry_var.get()[:-1])
 
 
+class ArduinoLink:
+    """Non-blocking serial link to the door-guard Arduino. Connect failure
+    is silent (sets self.connected = False) — the app must work fine with
+    no Arduino attached, same as the camera. Reads happen on a background
+    thread and land in a queue so the Tk mainloop never blocks on I/O."""
+
+    def __init__(self, port=ARDUINO_PORT, baud=ARDUINO_BAUD):
+        self.connected = False
+        self._serial = None
+        self._lines = queue.Queue()
+        if serial is None:
+            print("[arduino] pyserial not installed", flush=True)
+            return
+        try:
+            self._serial = serial.Serial(port, baud, timeout=1)
+            time.sleep(2)  # Uno resets itself when the serial port opens
+            self.connected = True
+            threading.Thread(target=self._read_loop, daemon=True).start()
+            print(f"[arduino] connected on {port}", flush=True)
+        except Exception as e:
+            print(f"[arduino] connect failed: {e}", flush=True)
+            self._serial = None
+
+    def _read_loop(self):
+        while True:
+            try:
+                raw = self._serial.readline()
+            except Exception as e:
+                print(f"[arduino] read error: {e}", flush=True)
+                break
+            line = raw.decode(errors="ignore").strip()
+            if line:
+                self._lines.put(line)
+
+    def send(self, command):
+        if not self.connected:
+            return
+        try:
+            self._serial.write((command + "\n").encode())
+        except Exception as e:
+            print(f"[arduino] send failed: {e}", flush=True)
+
+    def poll_lines(self):
+        lines = []
+        while not self._lines.empty():
+            lines.append(self._lines.get_nowait())
+        return lines
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -219,10 +278,15 @@ class App:
                 print("camera init failed:", e)
                 self.picam2 = None
 
+        self.arduino = ArduinoLink()
+        self.registering_rfid = False
+        self.pending_rfids = []
+
         self._build_ui()
         self._build_standby_screen()
         self._update_clock()
         self._update_preview()
+        self._poll_arduino()
         self.root.bind_all("<Button-1>", self._on_activity, add="+")
 
     def _setup_style(self):
@@ -362,14 +426,15 @@ class App:
         name_entry.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 10))
         name_entry.bind("<Button-1>", lambda e: self._open_keyboard(self.name_var, "ชื่อ"))
 
-        ttk.Label(form, text="RFID UID").grid(row=4, column=0, columnspan=2, sticky="w")
-        self.rfid_var = tk.StringVar()
-        rfid_entry = ttk.Entry(form, textvariable=self.rfid_var)
-        rfid_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 2))
-        rfid_entry.bind("<Button-1>", lambda e: self._open_keyboard(self.rfid_var, "RFID UID"))
-        ttk.Label(form, text="ยังไม่ได้ต่อเครื่องอ่าน RFID — กรอกเองไปก่อน", style="Muted.TLabel", wraplength=400).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        ttk.Label(form, text="บัตร RFID").grid(row=4, column=0, columnspan=2, sticky="w")
+        self.rfid_list_var = tk.StringVar(value="ยังไม่มีบัตรที่ลงทะเบียน")
+        ttk.Label(form, textvariable=self.rfid_list_var, style="Muted.TLabel", wraplength=400).grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(2, 4)
         )
+        self.rfid_register_btn = ttk.Button(
+            form, text="🔖 ลงทะเบียนบัตร RFID (แตะบัตรที่เครื่องอ่าน)", command=self._start_rfid_registration
+        )
+        self.rfid_register_btn.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 
         self.capture_btn = ttk.Button(
             form, text=f"📷  ถ่ายรูปใบหน้า ({FACES_PER_PERSON} รูป)", command=self.start_capture
@@ -479,6 +544,40 @@ class App:
     def _open_keyboard(self, entry_var, title):
         OnScreenKeyboard(self.root, entry_var, title=title)
 
+    def _start_rfid_registration(self):
+        if not self.arduino.connected:
+            messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
+            return
+        self.pending_rfids = []
+        self.registering_rfid = True
+        self._refresh_pending_rfid_label()
+        self.arduino.send("REGISTER")
+        self._set_status("โหมดลงทะเบียนบัตร — แตะบัตรที่เครื่องอ่าน RFID (แตะได้หลายใบ)", "normal")
+
+    def _refresh_pending_rfid_label(self):
+        if self.pending_rfids:
+            self.rfid_list_var.set(f"บัตรที่ลงทะเบียนแล้ว ({len(self.pending_rfids)}): " + ", ".join(self.pending_rfids))
+        else:
+            self.rfid_list_var.set("ยังไม่มีบัตรที่ลงทะเบียน")
+
+    def _poll_arduino(self):
+        for line in self.arduino.poll_lines():
+            print(f"[arduino] {line}", flush=True)
+            if not self.registering_rfid:
+                continue
+            if line.startswith("REGISTERED:"):
+                uid = line.split(":", 1)[1]
+                if uid not in self.pending_rfids:
+                    self.pending_rfids.append(uid)
+                self._refresh_pending_rfid_label()
+                self._set_status(f"บันทึกบัตร {uid} แล้ว ({len(self.pending_rfids)} ใบ) — แตะใบต่อไป หรือกด 'บันทึกผู้ใช้' เมื่อเสร็จ", "ok")
+            elif line.startswith("DUPLICATE:"):
+                uid = line.split(":", 1)[1]
+                self._set_status(f"บัตร {uid} เคยลงทะเบียนไว้แล้ว", "err")
+            elif line == "FULL":
+                self._set_status("หน่วยความจำ Arduino เต็ม ลงทะเบียนบัตรเพิ่มไม่ได้แล้ว", "err")
+        self.root.after(200, self._poll_arduino)
+
     def _on_menu_pressed(self):
         if self.admin_authenticated:
             return
@@ -523,11 +622,16 @@ class App:
         self.admin_authenticated = True
         self.admin_status_var.set("โหมด: ผู้ดูแลระบบ (ปลดล็อกแล้ว)")
         self.user_id_var.set(next_user_id(self.db))
+        self.pending_rfids = []
+        self.registering_rfid = False
+        self._refresh_pending_rfid_label()
         self._show_admin_screen()
         self._set_status("เข้าสู่เมนูผู้ดูแลระบบแล้ว", "ok")
 
     def _lock_admin(self):
         self.admin_authenticated = False
+        self.registering_rfid = False
+        self.arduino.send("IDLE")
         self._show_scan_screen()
         self._arm_idle_timer()
 
@@ -568,7 +672,11 @@ class App:
         self._person_order = list(self.db.keys())
         for name in self._person_order:
             info = self.db[name]
-            rfid = info.get("rfid") or "-"
+            rfid_raw = info.get("rfid")
+            if isinstance(rfid_raw, list):
+                rfid = ", ".join(rfid_raw) if rfid_raw else "-"
+            else:
+                rfid = rfid_raw or "-"
             uid = info.get("user_id", "----")
             role = info.get("role", ROLE_NORMAL)
             self.people_list.insert(
@@ -673,17 +781,21 @@ class App:
         self.db[name] = {
             "user_id": user_id,
             "role": self.role_var.get(),
-            "rfid": self.rfid_var.get().strip() or None,
+            "rfid": list(self.pending_rfids),
             "face_count": face_count,
             "registered_at": datetime.now().isoformat(timespec="seconds"),
         }
         save_db(self.db)
         self._refresh_people_list()
         self.name_var.set("")
-        self.rfid_var.set("")
         self.role_var.set(ROLE_NORMAL)
         self.user_id_var.set(next_user_id(self.db))
         self.progress.configure(value=0)
+
+        self.pending_rfids = []
+        self.registering_rfid = False
+        self._refresh_pending_rfid_label()
+        self.arduino.send("IDLE")
 
         if face_count > 0:
             self._set_status(f"บันทึก {name} แล้ว — กำลังเทรนโมเดล...", "warn")
