@@ -204,6 +204,12 @@ class ArduinoLink:
         if serial is None:
             print("[arduino] pyserial not installed", flush=True)
             return
+
+        # USB re-enumeration can rename /dev/ttyACM0 -> ttyACM1 (etc.) if the
+        # board resets/reconnects — look for an Arduino by USB vendor ID first,
+        # falling back to the configured port if nothing matches.
+        port = self._find_port() or port
+
         try:
             self._serial = serial.Serial(port, baud, timeout=1)
             time.sleep(2)  # Uno resets itself when the serial port opens
@@ -211,8 +217,19 @@ class ArduinoLink:
             threading.Thread(target=self._read_loop, daemon=True).start()
             print(f"[arduino] connected on {port}", flush=True)
         except Exception as e:
-            print(f"[arduino] connect failed: {e}", flush=True)
+            print(f"[arduino] connect failed on {port}: {e}", flush=True)
             self._serial = None
+
+    @staticmethod
+    def _find_port():
+        try:
+            from serial.tools import list_ports
+        except ImportError:
+            return None
+        for p in list_ports.comports():
+            if p.vid == 0x2341:  # Arduino SA
+                return p.device
+        return None
 
     def _read_loop(self):
         while True:
@@ -281,6 +298,7 @@ class App:
         self.arduino = ArduinoLink()
         self.registering_rfid = False
         self.pending_rfids = []
+        self.arduino_confirmed_total = None
 
         self._build_ui()
         self._build_standby_screen()
@@ -549,32 +567,68 @@ class App:
             messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
             return
         self.pending_rfids = []
+        self.arduino_confirmed_total = None
         self.registering_rfid = True
         self._refresh_pending_rfid_label()
         self.arduino.send("REGISTER")
         self._set_status("โหมดลงทะเบียนบัตร — แตะบัตรที่เครื่องอ่าน RFID (แตะได้หลายใบ)", "normal")
 
+    def _find_rfid_owner(self, uid, exclude_name=None):
+        for name, info in self.db.items():
+            if name == exclude_name:
+                continue
+            owned = info.get("rfid") or []
+            if isinstance(owned, str):
+                owned = [owned]
+            if uid in owned:
+                return name
+        return None
+
     def _refresh_pending_rfid_label(self):
-        if self.pending_rfids:
-            self.rfid_list_var.set(f"บัตรที่ลงทะเบียนแล้ว ({len(self.pending_rfids)}): " + ", ".join(self.pending_rfids))
-        else:
+        if not self.pending_rfids:
             self.rfid_list_var.set("ยังไม่มีบัตรที่ลงทะเบียน")
+            return
+        text = f"แตะไปแล้วรอบนี้ ({len(self.pending_rfids)}): " + ", ".join(self.pending_rfids)
+        if self.arduino_confirmed_total is not None:
+            text += f"  |  ยืนยันจาก Arduino: มีบัตรอยู่ในระบบทั้งหมด {self.arduino_confirmed_total} ใบ"
+        self.rfid_list_var.set(text)
 
     def _poll_arduino(self):
         for line in self.arduino.poll_lines():
             print(f"[arduino] {line}", flush=True)
             if not self.registering_rfid:
                 continue
-            if line.startswith("REGISTERED:"):
-                uid = line.split(":", 1)[1]
+            parts = line.split(":")
+            if parts[0] == "REGISTERED" and len(parts) == 3:
+                uid, total = parts[1], parts[2]
                 if uid not in self.pending_rfids:
                     self.pending_rfids.append(uid)
+                self.arduino_confirmed_total = total
                 self._refresh_pending_rfid_label()
-                self._set_status(f"บันทึกบัตร {uid} แล้ว ({len(self.pending_rfids)} ใบ) — แตะใบต่อไป หรือกด 'บันทึกผู้ใช้' เมื่อเสร็จ", "ok")
-            elif line.startswith("DUPLICATE:"):
-                uid = line.split(":", 1)[1]
-                self._set_status(f"บัตร {uid} เคยลงทะเบียนไว้แล้ว", "err")
-            elif line == "FULL":
+                self._set_status(
+                    f"Arduino ยืนยันบันทึกบัตร {uid} แล้ว (รวมทั้งหมดในระบบตอนนี้ {total} ใบ) — แตะใบต่อไป หรือกด 'บันทึกผู้ใช้' เมื่อเสร็จ",
+                    "ok",
+                )
+            elif parts[0] == "DUPLICATE" and len(parts) == 3:
+                # Arduino already has this UID in its EEPROM (e.g. registered
+                # before this feature existed, or before a Pi crash). If no
+                # Pi user owns it yet, link it to whoever we're editing now
+                # instead of just refusing — that's how an "orphaned" card
+                # gets reconnected to a name.
+                uid, total = parts[1], parts[2]
+                self.arduino_confirmed_total = total
+                owner = self._find_rfid_owner(uid, exclude_name=self.name_var.get().strip())
+                if owner:
+                    self._set_status(f"บัตร {uid} ผูกกับผู้ใช้ '{owner}' อยู่แล้ว ใช้ซ้ำกับคนอื่นไม่ได้", "err")
+                else:
+                    if uid not in self.pending_rfids:
+                        self.pending_rfids.append(uid)
+                    self._refresh_pending_rfid_label()
+                    self._set_status(
+                        f"บัตร {uid} มีอยู่ในระบบ Arduino แล้วแต่ยังไม่ผูกชื่อ — เชื่อมกับผู้ใช้นี้แล้ว (รวมทั้งหมด {total} ใบ)",
+                        "ok",
+                    )
+            elif parts[0] == "FULL":
                 self._set_status("หน่วยความจำ Arduino เต็ม ลงทะเบียนบัตรเพิ่มไม่ได้แล้ว", "err")
         self.root.after(200, self._poll_arduino)
 
@@ -623,6 +677,7 @@ class App:
         self.admin_status_var.set("โหมด: ผู้ดูแลระบบ (ปลดล็อกแล้ว)")
         self.user_id_var.set(next_user_id(self.db))
         self.pending_rfids = []
+        self.arduino_confirmed_total = None
         self.registering_rfid = False
         self._refresh_pending_rfid_label()
         self._show_admin_screen()
@@ -793,6 +848,7 @@ class App:
         self.progress.configure(value=0)
 
         self.pending_rfids = []
+        self.arduino_confirmed_total = None
         self.registering_rfid = False
         self._refresh_pending_rfid_label()
         self.arduino.send("IDLE")

@@ -100,14 +100,15 @@ void registerNewCard(const MFRC522::Uid &uid) {
 
   if (isAuthorized(uid)) {
     Serial.println("This card is already registered!");
-    Serial.println("DUPLICATE:" + uidToHex(uid));  // บรรทัดสำหรับ Pi parse
+    // ส่งจำนวนรวมปัจจุบันไปด้วย ให้ Pi โชว์ยอดที่ยืนยันจาก EEPROM จริง ไม่ใช่นับเองฝั่ง Pi
+    Serial.println("DUPLICATE:" + uidToHex(uid) + ":" + String(EEPROM.read(0)));
     return;
   }
 
   byte totalCards = EEPROM.read(0);
   if (totalCards >= MAX_CARDS) {
     Serial.println("EEPROM Full! Cannot register more cards.");
-    Serial.println("FULL");  // บรรทัดสำหรับ Pi parse
+    Serial.println("FULL:" + String(EEPROM.read(0)));
     return;
   }
 
@@ -118,11 +119,15 @@ void registerNewCard(const MFRC522::Uid &uid) {
 
   EEPROM.write(0, totalCards + 1);
 
+  // อ่านค่ากลับจาก EEPROM จริง (ไม่ใช่ค่าที่คำนวณไว้ก่อนเขียน) เพื่อยืนยันว่าบันทึกสำเร็จจริง
+  byte confirmedTotal = EEPROM.read(0);
+
   Serial.print("Register Success! Saved UID: ");
   printUID(uid);
   Serial.print(" | Total cards now: ");
-  Serial.println(EEPROM.read(0));
-  Serial.println("REGISTERED:" + uidToHex(uid));  // บรรทัดสำหรับ Pi parse
+  Serial.println(confirmedTotal);
+  // บรรทัดสำหรับ Pi parse: REGISTERED:<hex UID>:<จำนวนบัตรรวมที่ยืนยันจาก EEPROM>
+  Serial.println("REGISTERED:" + uidToHex(uid) + ":" + String(confirmedTotal));
 }
 
 void printUID(const MFRC522::Uid &uid) {
