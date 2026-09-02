@@ -277,6 +277,7 @@ class App:
         self.capturing = False
         self.current_name = None
         self._last_capture_time = 0.0
+        self._editing_original_name = None
 
         self.recognizer = None
         self.label_map = {}
@@ -480,6 +481,7 @@ class App:
             borderwidth=0, highlightthickness=0, activestyle="none", font=("Noto Sans", 10), height=8
         )
         self.people_list.pack(side="left", fill="both", expand=True)
+        self.people_list.bind("<<ListboxSelect>>", self._on_person_selected)
         list_scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=self.people_list.yview)
         list_scrollbar.pack(side="right", fill="y")
         self.people_list.configure(yscrollcommand=list_scrollbar.set)
@@ -679,6 +681,7 @@ class App:
         self.pending_rfids = []
         self.arduino_confirmed_total = None
         self.registering_rfid = False
+        self._editing_original_name = None
         self._refresh_pending_rfid_label()
         self._show_admin_screen()
         self._set_status("เข้าสู่เมนูผู้ดูแลระบบแล้ว", "ok")
@@ -738,6 +741,27 @@ class App:
                 tk.END,
                 f"  [{uid}] {name}  ({role})   •   RFID: {rfid}   •   รูป: {info.get('face_count', 0)}"
             )
+
+    def _on_person_selected(self, event):
+        sel = self.people_list.curselection()
+        if not sel:
+            return
+        name = self._person_order[sel[0]]
+        info = self.db[name]
+        self._editing_original_name = name
+
+        self.name_var.set(name)
+        self.user_id_var.set(info.get("user_id", ""))
+        self.role_var.set(info.get("role", ROLE_NORMAL))
+
+        rfid_raw = info.get("rfid") or []
+        self.pending_rfids = [rfid_raw] if isinstance(rfid_raw, str) else list(rfid_raw)
+        self.arduino_confirmed_total = None
+        self._refresh_pending_rfid_label()
+
+        self.registering_rfid = False
+        self.progress.configure(value=0)
+        self._set_status(f"กำลังแก้ไขผู้ใช้ '{name}' — แก้ข้อมูลแล้วกด 'บันทึกผู้ใช้' เพื่ออัปเดต", "normal")
 
     def _update_preview(self):
         if self.picam2 is not None:
@@ -833,13 +857,21 @@ class App:
         user_id = self.user_id_var.get().strip() or next_user_id(self.db)
         out_dir = os.path.join(DATASET_DIR, name)
         face_count = len(os.listdir(out_dir)) if os.path.isdir(out_dir) else 0
+
+        existing = self.db.get(self._editing_original_name) if self._editing_original_name else None
+        registered_at = existing["registered_at"] if existing else datetime.now().isoformat(timespec="seconds")
+
         self.db[name] = {
             "user_id": user_id,
             "role": self.role_var.get(),
             "rfid": list(self.pending_rfids),
             "face_count": face_count,
-            "registered_at": datetime.now().isoformat(timespec="seconds"),
+            "registered_at": registered_at,
         }
+        if self._editing_original_name and self._editing_original_name != name:
+            self.db.pop(self._editing_original_name, None)  # renamed — drop the old key
+        self._editing_original_name = None
+
         save_db(self.db)
         self._refresh_people_list()
         self.name_var.set("")
