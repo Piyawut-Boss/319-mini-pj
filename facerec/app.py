@@ -636,9 +636,20 @@ class App:
 
         for line in self.arduino.poll_lines():
             print(f"[arduino] {line}", flush=True)
+            parts = line.split(":")
+
+            # handled regardless of registering_rfid — a card removal (from
+            # deleting a user) can come back at any time, not just mid-registration
+            if parts[0] == "REMOVED" and len(parts) == 3:
+                uid, total = parts[1], parts[2]
+                self._set_status(f"Arduino ยืนยันลบบัตร {uid} แล้ว (เหลือในระบบ {total} ใบ)", "ok")
+                continue
+            if parts[0] == "NOTFOUND":
+                self._set_status(f"ไม่พบบัตร {parts[1] if len(parts) > 1 else ''} ใน Arduino (อาจลบไปแล้ว)", "err")
+                continue
+
             if not self.registering_rfid:
                 continue
-            parts = line.split(":")
             if parts[0] == "REGISTERED" and len(parts) == 3:
                 uid, total = parts[1], parts[2]
                 if uid not in self.pending_rfids:
@@ -937,10 +948,19 @@ class App:
         name = self._person_order[sel[0]]
         if not messagebox.askyesno("ยืนยันการลบ", f"ลบผู้ใช้ '{name}' ออกจากระบบ?"):
             return
+
+        rfid_raw = self.db[name].get("rfid") or []
+        uids = [rfid_raw] if isinstance(rfid_raw, str) else list(rfid_raw)
+        for uid in uids:
+            self.arduino.send(f"REMOVE:{uid}")  # keep the Arduino's own access list in sync
+
         self.db.pop(name, None)
         save_db(self.db)
         self._refresh_people_list()
-        self._set_status(f"ลบ {name} แล้ว", "warn")
+        if uids:
+            self._set_status(f"ลบ {name} แล้ว — สั่งลบบัตร {len(uids)} ใบออกจาก Arduino ด้วย", "warn")
+        else:
+            self._set_status(f"ลบ {name} แล้ว", "warn")
 
     def retrain(self):
         self._set_status("กำลังเทรนโมเดล...", "warn")

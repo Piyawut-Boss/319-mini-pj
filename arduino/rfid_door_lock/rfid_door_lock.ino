@@ -130,6 +130,57 @@ void registerNewCard(const MFRC522::Uid &uid) {
   Serial.println("REGISTERED:" + uidToHex(uid) + ":" + String(confirmedTotal));
 }
 
+// แปลง hex string 8 ตัวอักษร (จาก Pi) กลับเป็น 4 ไบต์ UID — คืนค่า false ถ้ารูปแบบผิด
+bool hexToUidBytes(const String &hex, byte *out) {
+  if (hex.length() != 8) return false;
+  for (int i = 0; i < 4; i++) {
+    out[i] = (byte) strtol(hex.substring(i * 2, i * 2 + 2).c_str(), NULL, 16);
+  }
+  return true;
+}
+
+// ลบบัตร 1 ใบออกจาก EEPROM ตาม UID ที่ Pi สั่งมา (ใช้ตอนลบผู้ใช้ฝั่ง Pi ให้
+// Arduino ไม่ยอมรับบัตรของคนที่ถูกลบไปแล้วต่อ)
+void removeCardByHex(const String &hex) {
+  byte target[4];
+  if (!hexToUidBytes(hex, target)) {
+    Serial.println("INVALID_UID:" + hex);
+    return;
+  }
+
+  byte totalCards = EEPROM.read(0);
+  int foundIndex = -1;
+  for (byte i = 0; i < totalCards; i++) {
+    bool match = true;
+    for (byte j = 0; j < 4; j++) {
+      if (EEPROM.read(1 + (i * 4) + j) != target[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      foundIndex = i;
+      break;
+    }
+  }
+
+  if (foundIndex == -1) {
+    Serial.println("NOTFOUND:" + hex);
+    return;
+  }
+
+  // เลื่อนรายการที่เหลือมาปิดช่องว่างที่ลบไป
+  for (byte i = foundIndex; i < totalCards - 1; i++) {
+    for (byte j = 0; j < 4; j++) {
+      byte nextVal = EEPROM.read(1 + ((i + 1) * 4) + j);
+      EEPROM.write(1 + (i * 4) + j, nextVal);
+    }
+  }
+  EEPROM.write(0, totalCards - 1);
+
+  Serial.println("REMOVED:" + hex + ":" + String(EEPROM.read(0)));
+}
+
 void printUID(const MFRC522::Uid &uid) {
   for (byte i = 0; i < uid.size; i++) {
     if (uid.uidByte[i] < 0x10) Serial.print("0");
@@ -167,6 +218,9 @@ void handleSerialCommands() {
         Serial.println("\n>>> [PI] -> CLEARED ALL CARDS <<<");
         Serial.println("CLEARED:0");
         Serial.println("MODE:IDLE");
+      } else if (serialLine.startsWith("REMOVE:")) {
+        // ลบผู้ใช้ฝั่ง Pi แล้ว สั่งให้ Arduino ลบบัตรใบนั้นออกจาก EEPROM ด้วย
+        removeCardByHex(serialLine.substring(7));
       }
       serialLine = "";
     } else if (c != '\r') {
