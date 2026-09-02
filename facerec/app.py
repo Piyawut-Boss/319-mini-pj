@@ -38,7 +38,7 @@ SETTINGS_PATH = os.path.join(BASE, "settings.json")
 # keep in sync with capture_faces.py / recognize.py
 ROTATE = None
 
-ARDUINO_PORT = "/dev/ttyACM0"
+ARDUINO_PORT = "/dev/arduino_rfid"  # stable symlink from udev rule, survives ttyACM0/1/2... reassignment
 ARDUINO_BAUD = 9600
 
 FACES_PER_PERSON = 20
@@ -201,27 +201,18 @@ class ArduinoLink:
         self.connected = False
         self._serial = None
         self._lines = queue.Queue()
+        self._port_hint = port
+        self._baud = baud
         if serial is None:
             print("[arduino] pyserial not installed", flush=True)
             return
-
-        # USB re-enumeration can rename /dev/ttyACM0 -> ttyACM1 (etc.) if the
-        # board resets/reconnects — look for an Arduino by USB vendor ID first,
-        # falling back to the configured port if nothing matches.
-        port = self._find_port() or port
-
-        try:
-            self._serial = serial.Serial(port, baud, timeout=1)
-            time.sleep(2)  # Uno resets itself when the serial port opens
-            self.connected = True
-            threading.Thread(target=self._read_loop, daemon=True).start()
-            print(f"[arduino] connected on {port}", flush=True)
-        except Exception as e:
-            print(f"[arduino] connect failed on {port}: {e}", flush=True)
-            self._serial = None
+        threading.Thread(target=self._connection_loop, daemon=True).start()
 
     @staticmethod
     def _find_port():
+        # USB re-enumeration can rename /dev/ttyACM0 -> ttyACM1 (etc.) if the
+        # board resets/reconnects — look for an Arduino by USB vendor ID
+        # instead of trusting a fixed path.
         try:
             from serial.tools import list_ports
         except ImportError:
@@ -231,13 +222,40 @@ class ArduinoLink:
                 return p.device
         return None
 
-    def _read_loop(self):
+    def _connection_loop(self):
+        """Runs for the lifetime of the app: connects, reads lines while
+        connected, and — if the cable drops mid-session (this has actually
+        happened: USB disconnects seen in dmesg during testing) — notices
+        the failed read, marks self.connected False so the UI stops
+        pretending it can talk to the board, and keeps retrying the
+        connection in the background so it recovers on its own once the
+        cable/board comes back."""
         while True:
+            if self._serial is None:
+                port = self._find_port() or self._port_hint
+                try:
+                    self._serial = serial.Serial(port, self._baud, timeout=1)
+                    time.sleep(2)  # Uno resets itself when the serial port opens
+                    self.connected = True
+                    print(f"[arduino] connected on {port}", flush=True)
+                except Exception as e:
+                    self._serial = None
+                    time.sleep(3)
+                    continue
+
             try:
                 raw = self._serial.readline()
             except Exception as e:
-                print(f"[arduino] read error: {e}", flush=True)
-                break
+                print(f"[arduino] read error: {e} — will retry connecting", flush=True)
+                self.connected = False
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
+                time.sleep(1)
+                continue
+
             line = raw.decode(errors="ignore").strip()
             if line:
                 self._lines.put(line)
@@ -248,7 +266,8 @@ class ArduinoLink:
         try:
             self._serial.write((command + "\n").encode())
         except Exception as e:
-            print(f"[arduino] send failed: {e}", flush=True)
+            print(f"[arduino] send failed: {e} — will retry connecting", flush=True)
+            self.connected = False  # the read loop will close it and reconnect
 
     def poll_lines(self):
         lines = []
@@ -445,7 +464,16 @@ class App:
         name_entry.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 10))
         name_entry.bind("<Button-1>", lambda e: self._open_keyboard(self.name_var, "ชื่อ"))
 
-        ttk.Label(form, text="บัตร RFID").grid(row=4, column=0, columnspan=2, sticky="w")
+        arduino_row = ttk.Frame(form)
+        arduino_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(arduino_row, text="บัตร RFID").pack(side="left")
+        self.arduino_status_var = tk.StringVar(value="Arduino: กำลังเชื่อมต่อ...")
+        self.arduino_status_label = tk.Label(
+            arduino_row, textvariable=self.arduino_status_var,
+            bg=COLOR_PANEL, fg=COLOR_MUTED, font=("Noto Sans", 9)
+        )
+        self.arduino_status_label.pack(side="right")
+
         self.rfid_list_var = tk.StringVar(value="ยังไม่มีบัตรที่ลงทะเบียน")
         ttk.Label(form, textvariable=self.rfid_list_var, style="Muted.TLabel", wraplength=400).grid(
             row=5, column=0, columnspan=2, sticky="w", pady=(2, 4)
@@ -596,6 +624,16 @@ class App:
         self.rfid_list_var.set(text)
 
     def _poll_arduino(self):
+        if self.arduino.connected:
+            self.arduino_status_var.set("Arduino: เชื่อมต่ออยู่")
+            self.arduino_status_label.configure(fg=COLOR_OK)
+        else:
+            self.arduino_status_var.set("Arduino: ไม่ได้เชื่อมต่อ (กำลังลองเชื่อมต่อใหม่...)")
+            self.arduino_status_label.configure(fg=COLOR_ERR)
+            if self.registering_rfid:
+                self.registering_rfid = False
+                self._set_status("การเชื่อมต่อ Arduino หลุดระหว่างลงทะเบียนบัตร — เชื่อมต่อใหม่แล้วลองอีกครั้ง", "err")
+
         for line in self.arduino.poll_lines():
             print(f"[arduino] {line}", flush=True)
             if not self.registering_rfid:
