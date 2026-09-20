@@ -1,35 +1,34 @@
+"""Rebuild embeddings.json from dataset/<name>/*.jpg using SFace.
+Replaces the old LBPH trainer.yml/labels.json step — there is no classifier
+to "train" anymore, just embeddings to (re)compute, but the script is kept
+under the same name since app.py's "retrain" button shells out to it."""
 import os
-import json
 import cv2
-import numpy as np
+from face_engine import FaceIdentifier, save_embeddings
 
-base = os.path.dirname(os.path.abspath(__file__))
-dataset_dir = os.path.join(base, "dataset")
+BASE = os.path.dirname(os.path.abspath(__file__))
+DATASET_DIR = os.path.join(BASE, "dataset")
 
-faces = []
-labels = []
-label_map = {}
+identifier = FaceIdentifier()
+gallery = {}
 
-for idx, name in enumerate(sorted(os.listdir(dataset_dir))):
-    person_dir = os.path.join(dataset_dir, name)
+for name in sorted(os.listdir(DATASET_DIR)):
+    person_dir = os.path.join(DATASET_DIR, name)
     if not os.path.isdir(person_dir):
         continue
-    label_map[idx] = name
-    for fname in os.listdir(person_dir):
-        img = cv2.imread(os.path.join(person_dir, fname), cv2.IMREAD_GRAYSCALE)
+    embeddings = []
+    for fname in sorted(os.listdir(person_dir)):
+        img = cv2.imread(os.path.join(person_dir, fname))
         if img is None:
             continue
-        faces.append(img)
-        labels.append(idx)
+        embeddings.append(identifier.embed(img))
+    if embeddings:
+        gallery[name] = embeddings
 
-if not faces:
-    raise SystemExit("no training images found in dataset/ — run capture_faces.py first")
+if not gallery:
+    raise SystemExit("no training images found in dataset/ — capture some faces first")
 
-recognizer = cv2.face.LBPHFaceRecognizer_create()
-recognizer.train(faces, np.array(labels))
-recognizer.save(os.path.join(base, "trainer.yml"))
-
-with open(os.path.join(base, "labels.json"), "w") as f:
-    json.dump(label_map, f)
-
-print(f"trained on {len(faces)} images, {len(label_map)} people: {list(label_map.values())}")
+save_embeddings(gallery)
+print(f"built embeddings for {len(gallery)} people: {list(gallery.keys())}")
+for name, embeddings in gallery.items():
+    print(f"  {name}: {len(embeddings)} images")

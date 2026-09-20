@@ -5,7 +5,7 @@
 ## สถาปัตยกรรม
 
 **Raspberry Pi 5 — "The Brain": AI & Logic Management**
-- Face Recognition (OpenCV LBPH), จอสแกนหน้าแบบ kiosk, จัดการฐานข้อมูลผู้ใช้
+- Face Recognition (YOLO26n เทรนเองสำหรับตรวจจับหน้า + OpenCV SFace สำหรับจดจำตัวตน), จอสแกนหน้าแบบ kiosk, จัดการฐานข้อมูลผู้ใช้
 - อุปกรณ์: Camera Module 3
 
 **Arduino Uno R3 — "The Guard": Safety & Door Controller**
@@ -19,11 +19,12 @@
 ```
 facerec/                 รันบน Pi 5 ที่ /home/<user>/facerec/
   app.py                   GUI หลัก — หน้าสแกน + หน้าผู้ดูแลระบบ (Tkinter)
+  face_engine.py           ตัวตรวจจับ (YOLO26n) + ตัวจดจำใบหน้า (SFace) ใช้ร่วมกันทุกสคริปต์
   capture_faces.py         เก็บรูปฝึกหน้าคนจาก command line
-  train_model.py           เทรน LBPH recognizer จากรูปที่เก็บทั้งหมด
+  train_model.py           สร้าง embeddings.json จากรูปที่เก็บทั้งหมด (SFace)
   recognize.py             รันจดจำใบหน้าจาก command line (ไม่มี GUI)
-  haarcascade_frontalface_default.xml
-  .gitignore               กัน people.json/dataset/รูปหน้าคน/รหัสผ่านหลุดขึ้น git
+  models/                  yolo26n_face.onnx (เทรนเองจาก WIDER FACE), face_recognition_sface_2021dec.onnx (official OpenCV Zoo)
+  .gitignore               กัน people.json/dataset/รูปหน้าคน/embeddings.json/รหัสผ่านหลุดขึ้น git
 facerec-app.desktop       shortcut เปิดแอปจาก desktop icon บน Pi
 
 arduino/
@@ -37,7 +38,7 @@ arduino/
 - หน้าจอ Standby (นาฬิกา+วันที่ พ.ศ., แตะปลุก, auto กลับเองถ้าไม่มีการแตะ — เปิด/ปิดได้ในเมนู admin)
 - หน้าสแกนเต็มจอ กรอบตรวจจับสีเขียว(จำได้)/แดง(stranger)
 - เมนูผู้ดูแลระบบต้องใส่รหัสผ่านก่อนถึงเพิ่ม/ลบ/ดูรายชื่อผู้ใช้ได้
-- ลงทะเบียนผู้ใช้: ชื่อ, User ID auto, สิทธิ์, ถ่ายรูป 20 รูป, ช่อง RFID (manual ชั่วคราว), เทรนโมเดลอัตโนมัติ
+- ลงทะเบียนผู้ใช้: ชื่อ, User ID auto, สิทธิ์, ถ่ายรูป 10 รูป, ช่อง RFID (manual ชั่วคราว), เทรนโมเดลอัตโนมัติ
 - on-screen keyboard สำหรับจอทัชสกรีน
 
 รันแอป:

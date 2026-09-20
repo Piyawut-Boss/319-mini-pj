@@ -1,21 +1,14 @@
-import os
-import json
 import time
 import cv2
 from picamera2 import Picamera2
+from face_engine import FaceDetector, FaceIdentifier, load_embeddings
 
-# keep this in sync with capture_faces.py
+# keep this in sync with app.py / capture_faces.py
 ROTATE = None
 
-# LBPH distance: lower = better match. Tune after seeing real confidence values.
-CONFIDENCE_THRESHOLD = 70
-
-base = os.path.dirname(os.path.abspath(__file__))
-cascade = cv2.CascadeClassifier(os.path.join(base, "haarcascade_frontalface_default.xml"))
-recognizer = cv2.face.LBPHFaceRecognizer_create()
-recognizer.read(os.path.join(base, "trainer.yml"))
-with open(os.path.join(base, "labels.json")) as f:
-    label_map = {int(k): v for k, v in json.load(f).items()}
+detector = FaceDetector()
+identifier = FaceIdentifier()
+gallery = load_embeddings()
 
 picam2 = Picamera2()
 picam2.configure(picam2.create_video_configuration(main={"size": (1280, 720), "format": "RGB888"}))
@@ -28,16 +21,20 @@ try:
         frame = picam2.capture_array()
         if ROTATE is not None:
             frame = cv2.rotate(frame, ROTATE)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(80, 80))
-        for (x, y, w, h) in faces:
-            face = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
-            label, confidence = recognizer.predict(face)
-            if confidence < CONFIDENCE_THRESHOLD:
-                name = label_map.get(label, "unknown")
-                print(f"MATCH: {name} (confidence {confidence:.1f})")
+        h, w = frame.shape[:2]
+        faces = detector.detect(frame)
+        for (x, y, fw, fh, det_score) in faces:
+            x0, y0 = max(0, x), max(0, y)
+            x1, y1 = min(w, x + fw), min(h, y + fh)
+            face = frame[y0:y1, x0:x1]
+            if face.size == 0:
+                continue
+            embedding = identifier.embed(face)
+            name, sim = identifier.best_match(embedding, gallery)
+            if name is not None:
+                print(f"MATCH: {name} (similarity {sim:.3f}, det {det_score:.2f})")
             else:
-                print(f"unknown face (confidence {confidence:.1f})")
+                print(f"unknown face (best similarity {sim:.3f}, det {det_score:.2f})")
         time.sleep(0.5)
 except KeyboardInterrupt:
     pass

@@ -11,3 +11,4 @@ settings.json
 __pycache__/
 *.pyc
 venv/
+embeddings.json

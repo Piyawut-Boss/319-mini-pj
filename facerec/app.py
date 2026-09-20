@@ -15,6 +15,8 @@ from datetime import datetime
 import cv2
 from PIL import Image, ImageTk
 
+from face_engine import FaceDetector, FaceIdentifier, load_embeddings, save_embeddings, MATCH_THRESHOLD
+
 try:
     from picamera2 import Picamera2
 except ImportError:
@@ -28,9 +30,6 @@ except ImportError:
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATASET_DIR = os.path.join(BASE, "dataset")
 DB_PATH = os.path.join(BASE, "people.json")
-CASCADE_PATH = os.path.join(BASE, "haarcascade_frontalface_default.xml")
-TRAINER_PATH = os.path.join(BASE, "trainer.yml")
-LABELS_PATH = os.path.join(BASE, "labels.json")
 LOCK_PATH = os.path.join(BASE, ".app.lock")
 ADMIN_PATH = os.path.join(BASE, "admin.json")
 SETTINGS_PATH = os.path.join(BASE, "settings.json")
@@ -41,8 +40,7 @@ ROTATE = None
 ARDUINO_PORT = "/dev/arduino_rfid"  # stable symlink from udev rule, survives ttyACM0/1/2... reassignment
 ARDUINO_BAUD = 9600
 
-FACES_PER_PERSON = 20
-CONFIDENCE_THRESHOLD = 70  # LBPH distance: lower = better match
+FACES_PER_PERSON = 10
 DEFAULT_ADMIN_PASSWORD = "1234"
 
 ROLE_NORMAL = "ผู้ใช้ทั่วไป"
@@ -286,7 +284,8 @@ class App:
 
         self._setup_style()
 
-        self.cascade = cv2.CascadeClassifier(CASCADE_PATH)
+        self.detector = FaceDetector()
+        self.identifier = FaceIdentifier()
         self.db = load_db()
         self.settings = load_settings()
         self.admin_password_hash = load_admin_password_hash()
@@ -298,9 +297,8 @@ class App:
         self._last_capture_time = 0.0
         self._editing_original_name = None
 
-        self.recognizer = None
-        self.label_map = {}
-        self._load_recognizer()
+        self.gallery = {}
+        self._load_gallery()
 
         self._idle_after_id = None
 
@@ -750,22 +748,9 @@ class App:
             "ok",
         )
 
-    def _load_recognizer(self):
-        if os.path.exists(TRAINER_PATH) and os.path.exists(LABELS_PATH):
-            try:
-                recognizer = cv2.face.LBPHFaceRecognizer_create()
-                recognizer.read(TRAINER_PATH)
-                with open(LABELS_PATH) as f:
-                    self.label_map = {int(k): v for k, v in json.load(f).items()}
-                self.recognizer = recognizer
-                print(f"[recognizer] loaded, {len(self.label_map)} people: {list(self.label_map.values())}", flush=True)
-            except Exception as e:
-                print(f"[recognizer] failed to load: {e}", flush=True)
-                self.recognizer = None
-                self.label_map = {}
-        else:
-            self.recognizer = None
-            self.label_map = {}
+    def _load_gallery(self):
+        self.gallery = load_embeddings()
+        print(f"[gallery] loaded, {len(self.gallery)} people: {list(self.gallery.keys())}", flush=True)
 
     def _set_status(self, text, kind="normal"):
         # only two status colors: green for success, red for failure —
@@ -818,15 +803,17 @@ class App:
                 frame = self.picam2.capture_array()  # BGR order (Picamera2's "RGB888" format)
                 if ROTATE is not None:
                     frame = cv2.rotate(frame, ROTATE)
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                faces = self.cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(80, 80))
+                frame_h, frame_w = frame.shape[:2]
+                faces = self.detector.detect(frame)
 
                 if self.capturing and len(faces) > 0:
                     now = time.time()
                     if now - self._last_capture_time >= 0.3:
                         self._last_capture_time = now
-                        x, y, w, h = faces[0]
-                        face = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
+                        x, y, w, h, _score = faces[0]
+                        x0, y0 = max(0, x), max(0, y)
+                        x1, y1 = min(frame_w, x + w), min(frame_h, y + h)
+                        face = cv2.resize(frame[y0:y1, x0:x1], (200, 200))
                         self.captured_count += 1
                         out_dir = os.path.join(DATASET_DIR, self.current_name)
                         os.makedirs(out_dir, exist_ok=True)
@@ -839,15 +826,16 @@ class App:
                             self.capture_btn.configure(state="normal")
                             self._set_status(f"ถ่ายครบ {FACES_PER_PERSON} รูปแล้ว กด 'บันทึกผู้ใช้' ต่อได้เลย", "ok")
 
-                for (x, y, w, h) in faces:
+                for (x, y, w, h, _score) in faces:
                     label_text = None
-                    if self.recognizer is not None and not self.capturing:
-                        face = cv2.resize(gray[y:y + h, x:x + w], (200, 200))
-                        pred_label, confidence = self.recognizer.predict(face)
-                        if confidence < CONFIDENCE_THRESHOLD:
-                            label_text = self.label_map.get(pred_label, "?")
-                        else:
-                            label_text = "stranger"
+                    if self.gallery and not self.capturing:
+                        x0, y0 = max(0, x), max(0, y)
+                        x1, y1 = min(frame_w, x + w), min(frame_h, y + h)
+                        face = frame[y0:y1, x0:x1]
+                        if face.size > 0:
+                            embedding = self.identifier.embed(face)
+                            name, _sim = self.identifier.best_match(embedding, self.gallery)
+                            label_text = name if name is not None else "stranger"
 
                     # green = recognized (access granted), red = stranger / not
                     # recognized yet (access denied)
@@ -970,7 +958,7 @@ class App:
             capture_output=True, text=True,
         )
         if result.returncode == 0:
-            self._load_recognizer()
+            self._load_gallery()
             messagebox.showinfo("สำเร็จ", result.stdout)
             self._set_status("เทรนโมเดลเสร็จแล้ว — พร้อมจดจำใบหน้าแล้ว", "ok")
         else:
