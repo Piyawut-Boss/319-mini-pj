@@ -455,6 +455,7 @@ class App:
         self._sync_queue = []
         self._sync_total = 0
         self._sync_progress = 0
+        self.door_held_open = False
 
         self._build_ui()
         self._build_standby_screen()
@@ -628,6 +629,32 @@ class App:
         )
         self.standby_off_btn.pack(side="left", ipady=6, padx=(2, 0))
         self._refresh_standby_toggle()
+
+        ttk.Label(settings_frame, text="เปิดประตู").pack(anchor="w", pady=(16, 8))
+        self.door_open_btn = tk.Button(
+            settings_frame, text="เปิดประตูตอนนี้", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            bg=COLOR_ACCENT, fg="white", activebackground=COLOR_ACCENT_HOVER, activeforeground="white",
+            command=self._open_door
+        )
+        self.door_open_btn.pack(anchor="w", ipady=6, ipadx=10)
+
+        ttk.Label(settings_frame, text="เปิดประตูค้าง (ไม่ล็อกอัตโนมัติ)").pack(anchor="w", pady=(16, 8))
+        door_hold_row = tk.Frame(settings_frame, bg=COLOR_PANEL)
+        door_hold_row.pack(anchor="w")
+        self.door_hold_on_btn = tk.Button(
+            door_hold_row, text="เปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_door_hold(True)
+        )
+        self.door_hold_on_btn.pack(side="left", ipady=6)
+        self.door_hold_off_btn = tk.Button(
+            door_hold_row, text="ปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_door_hold(False)
+        )
+        self.door_hold_off_btn.pack(side="left", ipady=6, padx=(2, 0))
+        self._refresh_door_hold_toggle()
 
         RoundedButton(
             settings_frame, text="🔄 รีเซ็ตและซิงค์บัตร RFID กับ Arduino", command=self._sync_all_cards_to_arduino,
@@ -1091,6 +1118,50 @@ class App:
         off_style = dict(bg=COLOR_SURFACE, fg=COLOR_MUTED, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_MUTED)
         self.standby_on_btn.configure(**(on_style if enabled else off_style))
         self.standby_off_btn.configure(**(off_style if enabled else on_style))
+
+    def _open_door(self):
+        """Momentary open — same relay pulse as an authorized card tap or
+        the physical EXIT button, just triggered from the admin UI. Sent
+        regardless of ADMIN_LOCK: that flag only blocks *card* unlocks, not
+        an explicit admin action."""
+        if not self.arduino.connected:
+            messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
+            return
+        self.arduino.send("OPEN")
+        self._set_status("สั่งเปิดประตูแล้ว", "ok")
+
+    def _set_door_hold(self, hold):
+        """Hold the door unlocked indefinitely (HOLD_ON) or release it back
+        to normal locked operation (HOLD_OFF) — same เปิด/ปิด segmented-
+        toggle pattern as the standby setting. State is tracked locally on
+        the Pi (door_held_open) since the Arduino has no "query current
+        state" command — if app.py restarts while a hold is still active on
+        the Arduino, this toggle's shown state can drift until pressed again."""
+        if not self.arduino.connected:
+            messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
+            return
+        if hold == self.door_held_open:
+            return
+        if hold:
+            if not messagebox.askyesno(
+                "ยืนยันเปิดประตูค้าง",
+                "จะเปิดประตูค้างไว้จนกว่าจะกดปิดอีกครั้ง (ไม่ล็อกอัตโนมัติ) ดำเนินการต่อ?",
+            ):
+                return
+            self.arduino.send("HOLD_ON")
+            self.door_held_open = True
+            self._set_status("เปิดประตูค้างไว้แล้ว", "warn")
+        else:
+            self.arduino.send("HOLD_OFF")
+            self.door_held_open = False
+            self._set_status("ปล่อยประตูค้าง — กลับสู่การล็อกปกติแล้ว", "ok")
+        self._refresh_door_hold_toggle()
+
+    def _refresh_door_hold_toggle(self):
+        on_style = dict(bg=COLOR_ERR, fg="white", activebackground="#b8302a", activeforeground="white")
+        off_style = dict(bg=COLOR_SURFACE, fg=COLOR_MUTED, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_MUTED)
+        self.door_hold_on_btn.configure(**(on_style if self.door_held_open else off_style))
+        self.door_hold_off_btn.configure(**(off_style if self.door_held_open else on_style))
 
     def _load_gallery(self):
         self.gallery = load_embeddings()

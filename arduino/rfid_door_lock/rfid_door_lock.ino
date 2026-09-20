@@ -28,6 +28,12 @@ SystemMode currentMode = MODE_IDLE;
 // refused in this state (the EXIT button is NOT affected, it always works)
 bool doorLockedByPi = false;
 
+// true while an admin has chosen to hold the door open indefinitely from
+// the Pi UI (HOLD_ON/HOLD_OFF) — overrides the normal 3s auto-relock in
+// unlockDoor() so a card scan or the EXIT button during a hold doesn't
+// accidentally re-lock it
+bool doorHeldOpen = false;
+
 #define MAX_CARDS 20
 
 const byte defaultUIDs[][4] = {
@@ -249,16 +255,34 @@ void unlockDoor() {
   Serial.println("Access Granted! Unlocking...");
   digitalWrite(RELAY_PIN, LOW);
   delay(3000);
-  digitalWrite(RELAY_PIN, HIGH);
-  Serial.println("Locked.");
+  if (!doorHeldOpen) {
+    digitalWrite(RELAY_PIN, HIGH);
+    Serial.println("Locked.");
+  } else {
+    Serial.println("Still held open (HOLD_ON active) — not re-locking.");
+  }
 
   mfrc522.PCD_Init();
+}
+
+// เปิด/ปล่อยการเปิดประตูค้างจากหน้า admin บน Pi — ทำงานตรงๆ ไม่ผ่าน currentMode
+// หรือ doorLockedByPi เลย เพราะเป็นคำสั่งเปิดประตูโดยตรงจาก admin ไม่ใช่การสแกนบัตร
+void setDoorHold(bool hold) {
+  doorHeldOpen = hold;
+  digitalWrite(RELAY_PIN, hold ? LOW : HIGH);
+  if (hold) {
+    Serial.println("\n>>> [PI] -> DOOR HELD OPEN <<<");
+  } else {
+    Serial.println("\n>>> [PI] -> DOOR HOLD RELEASED (locked) <<<");
+    mfrc522.PCD_Init();
+  }
 }
 
 // อ่านคำสั่งจาก Pi ทีละบรรทัด: "REGISTER" เข้าโหมดลงทะเบียน, "IDLE" กลับโหมดปกติ,
 // "REMOVE:<hex uid>" ลบบัตรใบนั้นออกจาก EEPROM, "ADD:<hex uid>" เขียนบัตรลง
 // EEPROM ตรงๆโดยไม่ต้องแตะบัตรจริง (กู้คืนตอนเปลี่ยน Arduino/EEPROM โดนล้าง),
-// "CLEAR" ล้างบัตรทั้งหมดออกจาก EEPROM จริงๆ
+// "CLEAR" ล้างบัตรทั้งหมดออกจาก EEPROM จริงๆ, "OPEN" เปิดประตูชั่วคราวจากปุ่ม admin,
+// "HOLD_ON"/"HOLD_OFF" เปิด/ปล่อยประตูค้างจากปุ่ม admin
 void handleSerialCommands() {
   while (Serial.available()) {
     char c = Serial.read();
@@ -287,6 +311,13 @@ void handleSerialCommands() {
       } else if (serialLine == "ADMIN_UNLOCK") {
         doorLockedByPi = false;
         Serial.println("\n>>> [PI] -> DOOR UNLOCKED (admin screen closed) <<<");
+      } else if (serialLine == "OPEN") {
+        Serial.println("\n>>> [PI] -> MANUAL OPEN (admin) <<<");
+        unlockDoor();
+      } else if (serialLine == "HOLD_ON") {
+        setDoorHold(true);
+      } else if (serialLine == "HOLD_OFF") {
+        setDoorHold(false);
       }
       serialLine = "";
     } else if (c != '\r') {
