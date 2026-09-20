@@ -7,7 +7,6 @@ import signal
 import hashlib
 import threading
 import queue
-import subprocess
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -53,14 +52,104 @@ THAI_MONTHS = [
     "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
 ]
 
-COLOR_BG = "#1e1f26"
-COLOR_PANEL = "#262832"
-COLOR_ACCENT = "#4f8cff"
-COLOR_TEXT = "#e8e9ee"
-COLOR_MUTED = "#8b8d98"
-COLOR_OK = "#2fbf71"
-COLOR_WARN = "#e0a52c"
-COLOR_ERR = "#e0524c"
+COLOR_BG = "#f4f5f9"
+COLOR_PANEL = "#ffffff"
+COLOR_SURFACE = "#eef0f5"
+COLOR_SURFACE_HOVER = "#e2e5ee"
+COLOR_BORDER = "#e0e2ea"
+COLOR_ACCENT = "#3d5ce0"
+COLOR_ACCENT_HOVER = "#3049c2"
+COLOR_ACCENT_SOFT = "#e8ecfd"
+COLOR_TEXT = "#1b1e29"
+COLOR_MUTED = "#6b7080"
+COLOR_OK = "#189c6b"
+COLOR_OK_SOFT = "#e2f6ee"
+COLOR_WARN = "#b9790f"
+COLOR_ERR = "#d63b30"
+COLOR_ERR_SOFT = "#fbe7e5"
+
+BUTTON_RADIUS = 10
+
+
+class RoundedButton(tk.Frame):
+    """A flat, rounded-corner button drawn on a Canvas — ttk can't do real
+    corner radii, and a business-modern look needs them. Behaves enough like
+    ttk.Button for existing call sites: .configure(state=...) / (text=...)
+    keeps working via the config()/configure() override below."""
+
+    _PALETTES = {
+        "accent": (COLOR_ACCENT, COLOR_ACCENT_HOVER, "#ffffff"),
+        "normal": (COLOR_SURFACE, COLOR_SURFACE_HOVER, COLOR_TEXT),
+        "danger": (COLOR_ERR_SOFT, "#3a2224", COLOR_ERR),
+    }
+
+    def __init__(self, parent, text, command=None, style="normal", height=42,
+                 font=("Noto Sans", 10), radius=BUTTON_RADIUS, panel_bg=None):
+        panel_bg = panel_bg or (parent["bg"] if "bg" in parent.keys() else COLOR_PANEL)
+        super().__init__(parent, bg=panel_bg, highlightthickness=0)
+        self.command = command
+        self.enabled = True
+        self.radius = radius
+        self.text = text
+        self.font = font
+        self.bg_color, self.hover_color, self.fg_color = self._PALETTES[style]
+        self._current_bg = self.bg_color
+
+        self.canvas = tk.Canvas(self, height=height, bg=panel_bg, highlightthickness=0, bd=0, cursor="hand2")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._redraw)
+        self.canvas.bind("<Enter>", self._on_enter)
+        self.canvas.bind("<Leave>", self._on_leave)
+        self.canvas.bind("<Button-1>", self._on_click)
+
+    def _round_rect_points(self, x1, y1, x2, y2, r):
+        return [
+            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+        ]
+
+    def _redraw(self, event=None):
+        self.canvas.delete("all")
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w < 2 or h < 2:
+            return
+        r = min(self.radius, h / 2)
+        fill = self._current_bg if self.enabled else COLOR_SURFACE
+        self.canvas.create_polygon(self._round_rect_points(0, 0, w, h, r), smooth=True, fill=fill, outline=fill)
+        self.canvas.create_text(
+            w / 2, h / 2, text=self.text, fill=self.fg_color if self.enabled else COLOR_MUTED,
+            font=self.font
+        )
+
+    def _on_enter(self, event):
+        if self.enabled:
+            self._current_bg = self.hover_color
+            self._redraw()
+
+    def _on_leave(self, event):
+        self._current_bg = self.bg_color
+        self._redraw()
+
+    def _on_click(self, event):
+        if self.enabled and self.command:
+            self.command()
+
+    def configure(self, **kwargs):
+        redraw = False
+        if "state" in kwargs:
+            self.enabled = kwargs.pop("state") != "disabled"
+            redraw = True
+        if "text" in kwargs:
+            self.text = kwargs.pop("text")
+            redraw = True
+        if "command" in kwargs:
+            self.command = kwargs.pop("command")
+        if redraw:
+            self._redraw()
+        if kwargs:
+            super().configure(**kwargs)
+
+    config = configure
 
 
 def load_db():
@@ -148,9 +237,9 @@ class OnScreenKeyboard(tk.Toplevel):
             row_frame.pack(pady=2)
             for ch in row:
                 btn = tk.Button(
-                    row_frame, text=ch, width=3, height=1, font=("Noto Sans", 12),
-                    bg="#33364a", fg=COLOR_TEXT, activebackground="#3d4160",
-                    relief="flat", command=lambda c=ch: self._press(c)
+                    row_frame, text=ch, width=3, height=2, font=("Noto Sans", 12),
+                    bg=COLOR_SURFACE, fg=COLOR_TEXT, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_TEXT,
+                    relief="flat", bd=0, command=lambda c=ch: self._press(c)
                 )
                 btn.pack(side="left", padx=2)
                 self.key_buttons.append(btn)
@@ -158,20 +247,24 @@ class OnScreenKeyboard(tk.Toplevel):
         bottom = tk.Frame(body, bg=COLOR_PANEL)
         bottom.pack(pady=(6, 0), fill="x")
         tk.Button(
-            bottom, text="Shift", width=6, bg="#33364a", fg=COLOR_TEXT,
-            relief="flat", command=self._toggle_shift
+            bottom, text="Shift", width=6, height=2, bg=COLOR_SURFACE, fg=COLOR_TEXT,
+            activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_TEXT,
+            relief="flat", bd=0, command=self._toggle_shift
         ).pack(side="left", padx=2)
         tk.Button(
-            bottom, text="เว้นวรรค", width=14, bg="#33364a", fg=COLOR_TEXT,
-            relief="flat", command=lambda: self._press(" ")
+            bottom, text="เว้นวรรค", width=14, height=2, bg=COLOR_SURFACE, fg=COLOR_TEXT,
+            activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_TEXT,
+            relief="flat", bd=0, command=lambda: self._press(" ")
         ).pack(side="left", padx=2)
         tk.Button(
-            bottom, text="⌫ ลบ", width=8, bg="#4a2d2d", fg=COLOR_ERR,
-            relief="flat", command=self._backspace
+            bottom, text="⌫ ลบ", width=8, height=2, bg=COLOR_ERR_SOFT, fg=COLOR_ERR,
+            activebackground="#3a2224", activeforeground=COLOR_ERR,
+            relief="flat", bd=0, command=self._backspace
         ).pack(side="left", padx=2)
         tk.Button(
-            bottom, text="เสร็จ", width=8, bg=COLOR_ACCENT, fg="white",
-            relief="flat", command=self.destroy
+            bottom, text="เสร็จ", width=8, height=2, bg=COLOR_ACCENT, fg="white",
+            activebackground=COLOR_ACCENT_HOVER, activeforeground="white",
+            relief="flat", bd=0, command=self.destroy
         ).pack(side="left", padx=2)
 
     def _toggle_shift(self):
@@ -187,6 +280,41 @@ class OnScreenKeyboard(tk.Toplevel):
 
     def _backspace(self):
         self.entry_var.set(self.entry_var.get()[:-1])
+
+
+class FrameGrabber(threading.Thread):
+    """Runs picam2.capture_array() in its own thread instead of the Tkinter
+    mainloop calling it directly. A real deadlock was observed in production
+    (found with py-spy): the main thread got stuck forever inside
+    capture_array()'s internal Future.result(), which has no timeout —
+    freezing the entire UI since Tkinter is single-threaded. Isolating the
+    capture call here means a Picamera2-internal stall only stops this
+    thread's frame updates; the rest of the app (buttons, menus) stays
+    responsive no matter what the camera pipeline does."""
+
+    def __init__(self, picam2):
+        super().__init__(daemon=True)
+        self.picam2 = picam2
+        self._lock = threading.Lock()
+        self._frame = None
+        self._stopped = False
+
+    def run(self):
+        while not self._stopped:
+            try:
+                frame = self.picam2.capture_array()
+                with self._lock:
+                    self._frame = frame
+            except Exception as e:
+                print(f"[camera] capture error: {e}", flush=True)
+                time.sleep(0.5)
+
+    def get_frame(self):
+        with self._lock:
+            return self._frame
+
+    def stop(self):
+        self._stopped = True
 
 
 class ArduinoLink:
@@ -313,10 +441,20 @@ class App:
                 print("camera init failed:", e)
                 self.picam2 = None
 
+        self.frame_grabber = None
+        if self.picam2 is not None:
+            self.frame_grabber = FrameGrabber(self.picam2)
+            self.frame_grabber.start()
+
         self.arduino = ArduinoLink()
         self.registering_rfid = False
         self.pending_rfids = []
         self.arduino_confirmed_total = None
+        self.syncing_cards = False
+        self._awaiting_clear = False
+        self._sync_queue = []
+        self._sync_total = 0
+        self._sync_progress = 0
 
         self._build_ui()
         self._build_standby_screen()
@@ -335,32 +473,21 @@ class App:
         style.configure(".", background=COLOR_BG, foreground=COLOR_TEXT, font=("Noto Sans", 11))
         style.configure("TFrame", background=COLOR_BG)
         style.configure("Panel.TFrame", background=COLOR_PANEL)
-        style.configure("TLabelframe", background=COLOR_PANEL, foreground=COLOR_TEXT, bordercolor="#3a3d4a")
-        style.configure("TLabelframe.Label", background=COLOR_PANEL, foreground=COLOR_ACCENT, font=("Noto Sans", 11, "bold"))
+        style.configure("TLabelframe", background=COLOR_PANEL, foreground=COLOR_TEXT, bordercolor=COLOR_BORDER, borderwidth=1)
+        style.configure("TLabelframe.Label", background=COLOR_PANEL, foreground=COLOR_MUTED, font=("Noto Sans", 10, "bold"))
         style.configure("TLabel", background=COLOR_PANEL, foreground=COLOR_TEXT)
         style.configure("Muted.TLabel", background=COLOR_PANEL, foreground=COLOR_MUTED, font=("Noto Sans", 9))
-        style.configure("Heading.TLabel", background=COLOR_BG, foreground=COLOR_TEXT, font=("Noto Sans", 16, "bold"))
-        style.configure(
-            "TButton", background="#33364a", foreground=COLOR_TEXT,
-            borderwidth=0, focusthickness=0, padding=8, font=("Noto Sans", 10)
-        )
-        style.map("TButton", background=[("active", "#3d4160")])
-        style.configure(
-            "Accent.TButton", background=COLOR_ACCENT, foreground="white",
-            borderwidth=0, padding=8, font=("Noto Sans", 10, "bold")
-        )
-        style.map("Accent.TButton", background=[("active", "#3f76e0")])
-        style.configure(
-            "Danger.TButton", background="#4a2d2d", foreground=COLOR_ERR,
-            borderwidth=0, padding=6, font=("Noto Sans", 9)
-        )
-        style.map("Danger.TButton", background=[("active", "#5c3535")])
-        style.configure("TEntry", fieldbackground="#1a1b22", foreground=COLOR_TEXT, insertcolor=COLOR_TEXT, borderwidth=0, padding=6)
-        style.configure("TSeparator", background="#3a3d4a")
+        style.configure("Heading.TLabel", background=COLOR_BG, foreground=COLOR_TEXT, font=("Noto Sans", 17, "bold"))
+        style.configure("TEntry", fieldbackground=COLOR_SURFACE, foreground=COLOR_TEXT, insertcolor=COLOR_TEXT, borderwidth=0, padding=8)
+        style.map("TEntry", fieldbackground=[("focus", COLOR_SURFACE_HOVER)])
+        style.configure("TCombobox", fieldbackground=COLOR_SURFACE, background=COLOR_SURFACE, foreground=COLOR_TEXT, borderwidth=0, padding=6, arrowcolor=COLOR_MUTED)
+        style.map("TCombobox", fieldbackground=[("readonly", COLOR_SURFACE)])
+        style.configure("TSeparator", background=COLOR_BORDER)
         style.configure("TCheckbutton", background=COLOR_PANEL, foreground=COLOR_TEXT, font=("Noto Sans", 10))
         style.map("TCheckbutton", background=[("active", COLOR_PANEL)])
+        style.configure("TScrollbar", background=COLOR_SURFACE, troughcolor=COLOR_PANEL, bordercolor=COLOR_PANEL, arrowcolor=COLOR_MUTED)
         style.configure(
-            "Capture.Horizontal.TProgressbar", troughcolor="#1a1b22",
+            "Capture.Horizontal.TProgressbar", troughcolor=COLOR_SURFACE,
             background=COLOR_ACCENT, bordercolor=COLOR_PANEL, lightcolor=COLOR_ACCENT, darkcolor=COLOR_ACCENT
         )
 
@@ -388,8 +515,13 @@ class App:
         )
         self.video_label.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        self.menu_btn = ttk.Button(self.scan_screen, text="⚙", width=3, command=self._on_menu_pressed)
-        self.menu_btn.place(relx=1.0, rely=0.0, x=-14, y=14, anchor="ne")
+        self.menu_btn = tk.Button(
+            self.scan_screen, text="⚙", font=("Noto Sans", 16),
+            bg=COLOR_SURFACE, fg=COLOR_TEXT, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_TEXT,
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=self._on_menu_pressed
+        )
+        self.menu_btn.place(relx=1.0, rely=0.0, x=-16, y=16, anchor="ne", width=44, height=44)
 
     # ---------------------------------------------------------------
     # ADMIN screen — only reachable after a successful password login.
@@ -399,18 +531,50 @@ class App:
         self.admin_screen = tk.Frame(self.main_container, bg=COLOR_BG)
 
         topbar = tk.Frame(self.admin_screen, bg=COLOR_BG)
-        topbar.pack(fill="x", padx=16, pady=(14, 6))
+        topbar.pack(fill="x", padx=20, pady=(18, 4))
         ttk.Label(topbar, text="โหมดผู้ดูแลระบบ", style="Heading.TLabel").pack(side="left")
-        ttk.Button(topbar, text="🔒 กลับหน้าสแกน", style="Danger.TButton", command=self._lock_admin).pack(side="right")
+        lock_btn = RoundedButton(topbar, text="🔒 กลับหน้าสแกน", command=self._lock_admin, style="danger", height=36, font=("Noto Sans", 9))
+        lock_btn.pack(side="right")
+        lock_btn.canvas.configure(width=140)
 
         self.admin_status_var = tk.StringVar(value="โหมด: ผู้ดูแลระบบ")
         ttk.Label(self.admin_screen, textvariable=self.admin_status_var, style="Muted.TLabel").pack(
-            anchor="w", padx=16, pady=(0, 8)
+            anchor="w", padx=20, pady=(2, 4)
         )
+        tk.Frame(self.admin_screen, bg=COLOR_BORDER, height=1).pack(fill="x", padx=20, pady=(0, 12))
 
-        # scrollable content column (portrait screens can get taller than the window)
-        canvas = tk.Canvas(self.admin_screen, bg=COLOR_BG, highlightthickness=0)
-        vscroll = ttk.Scrollbar(self.admin_screen, orient="vertical", command=canvas.yview)
+        # status bar lives directly on admin_screen (not inside either sub-page below)
+        # so it stays visible and shows feedback no matter which sub-page is active
+        status_row = tk.Frame(self.admin_screen, bg=COLOR_PANEL)
+        status_row.pack(fill="x", padx=20, pady=(0, 12))
+        self.status_accent = tk.Frame(status_row, bg=COLOR_MUTED, width=4)
+        self.status_accent.pack(side="left", fill="y")
+        self.status_var = tk.StringVar(value="พร้อม")
+        self.status_label = tk.Label(
+            status_row, textvariable=self.status_var, anchor="w",
+            bg=COLOR_PANEL, fg=COLOR_TEXT, font=("Noto Sans", 10), padx=14, pady=10
+        )
+        self.status_label.pack(side="left", fill="both", expand=True)
+
+        # body area swaps between the user list (home) and the add/edit form —
+        # two separate sub-pages, entered by explicit navigation rather than one
+        # long page where selecting a user silently repopulated an inline form
+        self.admin_body = tk.Frame(self.admin_screen, bg=COLOR_BG)
+        self.admin_body.pack(fill="both", expand=True)
+
+        self._build_admin_list_page()
+        self._build_admin_form_page()
+        self.admin_list_page.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    # ---------------------------------------------------------------
+    # ADMIN LIST page — the admin "home": user list, add-new button,
+    # system settings. Tapping a user navigates to the form page below.
+    # ---------------------------------------------------------------
+    def _build_admin_list_page(self):
+        self.admin_list_page = tk.Frame(self.admin_body, bg=COLOR_BG)
+
+        canvas = tk.Canvas(self.admin_list_page, bg=COLOR_BG, highlightthickness=0)
+        vscroll = ttk.Scrollbar(self.admin_list_page, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vscroll.set)
         canvas.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(0, 16))
         vscroll.pack(side="right", fill="y", pady=(0, 16))
@@ -420,24 +584,84 @@ class App:
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(content_window, width=e.width))
 
-        # small live preview (for the face-capture step)
-        preview_wrap = tk.Frame(content, bg="black", height=260)
-        preview_wrap.pack(fill="x", pady=(0, 14))
-        preview_wrap.pack_propagate(False)
-        self.admin_video_label = tk.Label(
-            preview_wrap, text="กล้องไม่ได้เชื่อมต่อ", anchor="center",
-            background="black", foreground=COLOR_MUTED, font=("Noto Sans", 11)
-        )
-        self.admin_video_label.pack(fill="both", expand=True)
+        RoundedButton(
+            content, text="➕  เพิ่มผู้ใช้ใหม่", command=lambda: self._show_admin_form(None),
+            style="accent", panel_bg=COLOR_BG, font=("Noto Sans", 10, "bold")
+        ).pack(fill="x", pady=(4, 16))
 
-        self.status_var = tk.StringVar(value="พร้อม")
-        self.status_label = tk.Label(
-            content, textvariable=self.status_var, anchor="w",
-            bg=COLOR_PANEL, fg=COLOR_TEXT, font=("Noto Sans", 10), padx=12, pady=8
-        )
-        self.status_label.pack(fill="x", pady=(0, 14))
+        list_frame = ttk.Labelframe(content, text="ผู้ใช้ที่ลงทะเบียนแล้ว", padding=10)
+        list_frame.pack(fill="x", pady=(0, 20))
 
-        form = ttk.Labelframe(content, text="ลงทะเบียนผู้ใช้ใหม่", padding=14)
+        list_container = tk.Frame(list_frame, bg=COLOR_PANEL)
+        list_container.pack(fill="x")
+
+        self.people_list = tk.Listbox(
+            list_container, bg=COLOR_SURFACE, fg=COLOR_TEXT, selectbackground=COLOR_ACCENT, selectforeground="white",
+            borderwidth=0, highlightthickness=0, activestyle="none", font=("Noto Sans", 10), height=8
+        )
+        self.people_list.pack(side="left", fill="both", expand=True)
+        self.people_list.bind("<<ListboxSelect>>", self._on_person_selected)
+        list_scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=self.people_list.yview)
+        list_scrollbar.pack(side="right", fill="y")
+        self.people_list.configure(yscrollcommand=list_scrollbar.set)
+
+        RoundedButton(
+            list_frame, text="ลบผู้ใช้ที่เลือก", command=self.delete_selected, style="danger", panel_bg=COLOR_PANEL, height=38
+        ).pack(fill="x", pady=(8, 0))
+
+        settings_frame = ttk.Labelframe(content, text="ตั้งค่าระบบ", padding=14)
+        settings_frame.pack(fill="x", pady=(0, 20))
+        ttk.Label(settings_frame, text="หน้าพักหน้าจอ (Standby)").pack(anchor="w", pady=(0, 8))
+
+        toggle_row = tk.Frame(settings_frame, bg=COLOR_PANEL)
+        toggle_row.pack(anchor="w")
+        self.standby_on_btn = tk.Button(
+            toggle_row, text="เปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_standby_enabled(True)
+        )
+        self.standby_on_btn.pack(side="left", ipady=6)
+        self.standby_off_btn = tk.Button(
+            toggle_row, text="ปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_standby_enabled(False)
+        )
+        self.standby_off_btn.pack(side="left", ipady=6, padx=(2, 0))
+        self._refresh_standby_toggle()
+
+        RoundedButton(
+            settings_frame, text="🔄 รีเซ็ตและซิงค์บัตร RFID กับ Arduino", command=self._sync_all_cards_to_arduino,
+            style="normal", panel_bg=COLOR_PANEL, height=38
+        ).pack(fill="x", pady=(16, 0))
+
+        self._refresh_people_list()
+
+    # ---------------------------------------------------------------
+    # ADMIN FORM page — add a new user OR edit an existing one (same
+    # fields either way); which mode depends on how you navigated here.
+    # ---------------------------------------------------------------
+    def _build_admin_form_page(self):
+        self.admin_form_page = tk.Frame(self.admin_body, bg=COLOR_BG)
+
+        back_row = tk.Frame(self.admin_form_page, bg=COLOR_BG)
+        back_row.pack(fill="x", padx=16, pady=(10, 0))
+        back_btn = RoundedButton(back_row, text="← กลับ", command=self._show_admin_list, style="normal", height=34, font=("Noto Sans", 9), panel_bg=COLOR_BG)
+        back_btn.pack(side="left")
+        back_btn.canvas.configure(width=90)
+
+        canvas = tk.Canvas(self.admin_form_page, bg=COLOR_BG, highlightthickness=0)
+        vscroll = ttk.Scrollbar(self.admin_form_page, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(16, 0), pady=(8, 16))
+        vscroll.pack(side="right", fill="y", pady=(8, 16))
+
+        content = tk.Frame(canvas, bg=COLOR_BG)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(content_window, width=e.width))
+
+        self.user_form_frame = ttk.Labelframe(content, text="เพิ่มผู้ใช้ใหม่", padding=14)
+        form = self.user_form_frame
         form.pack(fill="x", pady=(0, 14))
         form.columnconfigure(0, weight=1)
         form.columnconfigure(1, weight=1)
@@ -472,17 +696,17 @@ class App:
         )
         self.arduino_status_label.pack(side="right")
 
-        self.rfid_list_var = tk.StringVar(value="ยังไม่มีบัตรที่ลงทะเบียน")
-        ttk.Label(form, textvariable=self.rfid_list_var, style="Muted.TLabel", wraplength=400).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(2, 4)
-        )
-        self.rfid_register_btn = ttk.Button(
-            form, text="🔖 ลงทะเบียนบัตร RFID (แตะบัตรที่เครื่องอ่าน)", command=self._start_rfid_registration
+        self.rfid_rows_frame = tk.Frame(form, bg=COLOR_PANEL)
+        self.rfid_rows_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 4))
+        self.rfid_register_btn = RoundedButton(
+            form, text="🔖 ลงทะเบียนบัตร RFID (แตะบัตรที่เครื่องอ่าน)", command=self._start_rfid_registration,
+            style="normal", panel_bg=COLOR_PANEL
         )
         self.rfid_register_btn.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 
-        self.capture_btn = ttk.Button(
-            form, text=f"📷  ถ่ายรูปใบหน้า ({FACES_PER_PERSON} รูป)", command=self.start_capture
+        self.capture_btn = RoundedButton(
+            form, text=f"📷  ถ่ายรูปใบหน้า ({FACES_PER_PERSON} รูป)", command=self.start_capture,
+            style="normal", panel_bg=COLOR_PANEL
         )
         self.capture_btn.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 4))
 
@@ -491,40 +715,9 @@ class App:
         )
         self.progress.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(2, 10))
 
-        ttk.Button(form, text="บันทึกผู้ใช้", style="Accent.TButton", command=self.save_person).grid(
-            row=9, column=0, columnspan=2, sticky="ew", pady=(0, 4)
-        )
-        ttk.Button(form, text="เทรนโมเดลใหม่", command=self.retrain).grid(row=10, column=0, columnspan=2, sticky="ew")
-
-        list_frame = ttk.Labelframe(content, text="ผู้ใช้ที่ลงทะเบียนแล้ว", padding=10)
-        list_frame.pack(fill="x", pady=(0, 20))
-
-        list_container = tk.Frame(list_frame, bg=COLOR_PANEL)
-        list_container.pack(fill="x")
-
-        self.people_list = tk.Listbox(
-            list_container, bg="#1a1b22", fg=COLOR_TEXT, selectbackground=COLOR_ACCENT,
-            borderwidth=0, highlightthickness=0, activestyle="none", font=("Noto Sans", 10), height=8
-        )
-        self.people_list.pack(side="left", fill="both", expand=True)
-        self.people_list.bind("<<ListboxSelect>>", self._on_person_selected)
-        list_scrollbar = ttk.Scrollbar(list_container, orient="vertical", command=self.people_list.yview)
-        list_scrollbar.pack(side="right", fill="y")
-        self.people_list.configure(yscrollcommand=list_scrollbar.set)
-
-        ttk.Button(list_frame, text="ลบผู้ใช้ที่เลือก", style="Danger.TButton", command=self.delete_selected).pack(
-            fill="x", pady=(8, 0)
-        )
-
-        settings_frame = ttk.Labelframe(content, text="ตั้งค่าระบบ", padding=14)
-        settings_frame.pack(fill="x", pady=(0, 20))
-        self.standby_enabled_var = tk.BooleanVar(value=self.settings.get("standby_enabled", True))
-        ttk.Checkbutton(
-            settings_frame, text="เปิดใช้งานหน้าพักหน้าจอ (Standby)",
-            variable=self.standby_enabled_var, command=self._on_toggle_standby_setting
-        ).pack(anchor="w")
-
-        self._refresh_people_list()
+        RoundedButton(
+            form, text="บันทึกผู้ใช้", command=self.save_person, style="accent", panel_bg=COLOR_PANEL, font=("Noto Sans", 10, "bold")
+        ).grid(row=9, column=0, columnspan=2, sticky="ew")
 
     def _show_scan_screen(self):
         self.admin_screen.place_forget()
@@ -536,7 +729,45 @@ class App:
         self.scan_screen.place_forget()
         self.admin_screen.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.admin_screen.lift()
-        self.current_screen = "admin"
+
+    def _show_admin_list(self):
+        self.admin_form_page.place_forget()
+        self.admin_list_page.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.admin_list_page.lift()
+        self.current_screen = "admin_list"
+        self._refresh_people_list()
+
+    def _show_admin_form(self, editing_name):
+        self._editing_original_name = editing_name
+        self.pending_rfids = []
+        self.arduino_confirmed_total = None
+        self.registering_rfid = False
+        self.capturing = False
+        self.captured_count = 0  # tracks whether *this* visit captured new photos, see save_person
+        self.progress.configure(value=0)
+        self.capture_btn.configure(state="normal")
+
+        if editing_name:
+            info = self.db[editing_name]
+            self.name_var.set(editing_name)
+            self.user_id_var.set(info.get("user_id", ""))
+            self.role_var.set(info.get("role", ROLE_NORMAL))
+            rfid_raw = info.get("rfid") or []
+            self.pending_rfids = [rfid_raw] if isinstance(rfid_raw, str) else list(rfid_raw)
+            self.user_form_frame.configure(text=f"แก้ไขผู้ใช้: {editing_name}")
+            self._set_status(f"กำลังแก้ไขผู้ใช้ '{editing_name}' — แก้ข้อมูลแล้วกด 'บันทึกผู้ใช้' เพื่ออัปเดต", "normal")
+        else:
+            self.name_var.set("")
+            self.user_id_var.set(next_user_id(self.db))
+            self.role_var.set(ROLE_NORMAL)
+            self.user_form_frame.configure(text="เพิ่มผู้ใช้ใหม่")
+            self._set_status("กรอกข้อมูลผู้ใช้ใหม่ ถ่ายรูป และลงทะเบียนบัตรได้เลย", "normal")
+
+        self._refresh_pending_rfid_label()
+        self.admin_list_page.place_forget()
+        self.admin_form_page.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.admin_form_page.lift()
+        self.current_screen = "admin_form"
 
     def _build_standby_screen(self):
         self.standby_frame = tk.Frame(self.main_container, bg=COLOR_BG)
@@ -548,12 +779,20 @@ class App:
         self.date_var = tk.StringVar(value="")
 
         tk.Label(center, textvariable=self.clock_var, font=("Noto Sans", 64, "bold"), bg=COLOR_BG, fg=COLOR_TEXT).pack()
-        tk.Label(center, textvariable=self.date_var, font=("Noto Sans", 16), bg=COLOR_BG, fg=COLOR_MUTED).pack(pady=(4, 40))
-        tk.Label(center, text="👋  แตะหน้าจอเพื่อสแกนใบหน้า", font=("Noto Sans", 18), bg=COLOR_BG, fg=COLOR_ACCENT).pack()
+        tk.Label(center, textvariable=self.date_var, font=("Noto Sans", 15), bg=COLOR_BG, fg=COLOR_MUTED).pack(pady=(4, 44))
+        hint_pill = tk.Frame(center, bg=COLOR_ACCENT_SOFT)
+        hint_pill.pack()
+        tk.Label(
+            hint_pill, text="แตะหน้าจอเพื่อสแกนใบหน้า", font=("Noto Sans", 13), bg=COLOR_ACCENT_SOFT, fg=COLOR_ACCENT,
+            padx=22, pady=10
+        ).pack()
 
         # tapping anywhere on the standby screen wakes it — bind the frame
-        # and every child widget so a tap on the labels also counts
-        for widget in (self.standby_frame, center, *center.winfo_children()):
+        # and every child/grandchild widget so a tap on the labels or the
+        # hint pill also counts
+        widgets_to_bind = [self.standby_frame, center, *center.winfo_children()]
+        widgets_to_bind += hint_pill.winfo_children()
+        for widget in widgets_to_bind:
             widget.bind("<Button-1>", lambda e: self._wake_from_standby())
 
         self.standby_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -594,6 +833,9 @@ class App:
         if not self.arduino.connected:
             messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
             return
+        if self.syncing_cards:
+            messagebox.showerror("ผิดพลาด", "กำลังซิงค์บัตรทั้งหมดไป Arduino อยู่ รอให้เสร็จก่อน")
+            return
         self.pending_rfids = []
         self.arduino_confirmed_total = None
         self.registering_rfid = True
@@ -613,13 +855,40 @@ class App:
         return None
 
     def _refresh_pending_rfid_label(self):
+        for widget in self.rfid_rows_frame.winfo_children():
+            widget.destroy()
+
         if not self.pending_rfids:
-            self.rfid_list_var.set("ยังไม่มีบัตรที่ลงทะเบียน")
+            tk.Label(
+                self.rfid_rows_frame, text="ยังไม่มีบัตรที่ลงทะเบียน",
+                bg=COLOR_PANEL, fg=COLOR_MUTED, font=("Noto Sans", 9)
+            ).pack(anchor="w")
             return
-        text = f"แตะไปแล้วรอบนี้ ({len(self.pending_rfids)}): " + ", ".join(self.pending_rfids)
+
+        for uid in self.pending_rfids:
+            row = tk.Frame(self.rfid_rows_frame, bg=COLOR_SURFACE)
+            row.pack(fill="x", pady=2)
+            tk.Label(
+                row, text=uid, bg=COLOR_SURFACE, fg=COLOR_TEXT, font=("Noto Sans", 9),
+                anchor="w", padx=10, pady=6
+            ).pack(side="left", fill="x", expand=True)
+            tk.Button(
+                row, text="✕", bg=COLOR_ERR_SOFT, fg=COLOR_ERR, relief="flat", bd=0,
+                font=("Noto Sans", 9, "bold"), width=3, cursor="hand2",
+                command=lambda u=uid: self._remove_pending_rfid(u)
+            ).pack(side="right", padx=4, pady=2)
+
         if self.arduino_confirmed_total is not None:
-            text += f"  |  ยืนยันจาก Arduino: มีบัตรอยู่ในระบบทั้งหมด {self.arduino_confirmed_total} ใบ"
-        self.rfid_list_var.set(text)
+            tk.Label(
+                self.rfid_rows_frame, text=f"ยืนยันจาก Arduino: มีบัตรอยู่ในระบบทั้งหมด {self.arduino_confirmed_total} ใบ",
+                bg=COLOR_PANEL, fg=COLOR_MUTED, font=("Noto Sans", 8)
+            ).pack(anchor="w", pady=(4, 0))
+
+    def _remove_pending_rfid(self, uid):
+        if uid in self.pending_rfids:
+            self.pending_rfids.remove(uid)
+            self._refresh_pending_rfid_label()
+            self._set_status(f"เอาบัตร {uid} ออกจากรายการแล้ว — กด 'บันทึกผู้ใช้' เพื่อยืนยัน", "warn")
 
     def _poll_arduino(self):
         if self.arduino.connected:
@@ -644,6 +913,27 @@ class App:
                 continue
             if parts[0] == "NOTFOUND":
                 self._set_status(f"ไม่พบบัตร {parts[1] if len(parts) > 1 else ''} ใน Arduino (อาจลบไปแล้ว)", "err")
+                continue
+
+            # bulk "reset & sync" (see _sync_all_cards_to_arduino): CLEAR wipes
+            # the Arduino's EEPROM first so no unowned/orphaned card can
+            # survive, then every owned card from people.json is pushed back
+            if self.syncing_cards and self._awaiting_clear and parts[0] == "CLEARED":
+                self._awaiting_clear = False
+                self._set_status(f"ล้างบัตรเดิมทั้งหมดแล้ว — กำลังเขียนบัตรใหม่... (0/{self._sync_total})", "warn")
+                self._send_next_sync_card()
+                continue
+
+            # bulk "sync all cards to Arduino" (see _sync_all_cards_to_arduino) —
+            # kept entirely separate from the interactive single-user
+            # registration flow below so it never touches pending_rfids for
+            # whichever user's form happens to be open
+            if self.syncing_cards and parts[0] in ("REGISTERED", "DUPLICATE", "FULL"):
+                self._sync_progress += 1
+                if parts[0] == "FULL":
+                    self._set_status(f"หน่วยความจำ Arduino เต็มระหว่างซิงค์ ({self._sync_progress}/{self._sync_total}) — หยุดซิงค์", "err")
+                    self._sync_queue = []
+                self._send_next_sync_card()
                 continue
 
             if not self.registering_rfid:
@@ -680,6 +970,52 @@ class App:
             elif parts[0] == "FULL":
                 self._set_status("หน่วยความจำ Arduino เต็ม ลงทะเบียนบัตรเพิ่มไม่ได้แล้ว", "err")
         self.root.after(200, self._poll_arduino)
+
+    def _sync_all_cards_to_arduino(self):
+        """Wipe the Arduino's EEPROM (CLEAR) and rewrite it from scratch with
+        exactly the cards on file in people.json — guarantees every card left
+        on the Arduino has a real owner (any orphaned/unknown UID is dropped
+        by the wipe) and also covers the old recovery case (Arduino replaced
+        / EEPROM already blank, where CLEAR is just a no-op). Independent of
+        MODE_IDLE/MODE_REGISTER on the Arduino (ADD writes directly, no mode
+        switch needed) and kept separate from the interactive registration
+        flow on the Pi side (see the syncing_cards branch in _poll_arduino)."""
+        if not self.arduino.connected:
+            messagebox.showerror("ผิดพลาด", "ยังไม่ได้เชื่อมต่อ Arduino")
+            return
+        if self.registering_rfid:
+            messagebox.showerror("ผิดพลาด", "กำลังลงทะเบียนบัตรของผู้ใช้อยู่ รอให้เสร็จก่อน")
+            return
+
+        uids = []
+        for info in self.db.values():
+            rfid_raw = info.get("rfid") or []
+            uids.extend([rfid_raw] if isinstance(rfid_raw, str) else rfid_raw)
+
+        if not messagebox.askyesno(
+            "ยืนยันการรีเซ็ตและซิงค์",
+            "จะลบบัตรทั้งหมดที่มีอยู่ใน Arduino ตอนนี้ก่อน (รวมบัตรที่ไม่มีเจ้าของใน people.json) "
+            f"แล้วเขียนบัตรที่มีเจ้าของกลับเข้าไปใหม่ทั้งหมด ({len(uids)} ใบ) — บัตรที่ไม่มีเจ้าของจะใช้เปิดประตูไม่ได้อีก "
+            "ดำเนินการต่อ?",
+        ):
+            return
+
+        self._sync_queue = uids
+        self._sync_total = len(uids)
+        self._sync_progress = 0
+        self.syncing_cards = True
+        self._awaiting_clear = True
+        self._set_status("กำลังล้างบัตรเดิมทั้งหมดใน Arduino...", "warn")
+        self.arduino.send("CLEAR")
+
+    def _send_next_sync_card(self):
+        if not self._sync_queue:
+            self.syncing_cards = False
+            self._set_status(f"รีเซ็ตและซิงค์บัตรเสร็จแล้ว ({self._sync_progress}/{self._sync_total} ใบ มีเจ้าของครบ)", "ok")
+            return
+        uid = self._sync_queue.pop(0)
+        self._set_status(f"กำลังซิงค์บัตรไป Arduino... ({self._sync_progress}/{self._sync_total})", "warn")
+        self.arduino.send(f"ADD:{uid}")
 
     def _on_menu_pressed(self):
         if self.admin_authenticated:
@@ -718,35 +1054,43 @@ class App:
                 error_var.set("รหัสผ่านไม่ถูกต้อง")
                 password_var.set("")
 
-        ttk.Button(btn_row, text="ยกเลิก", command=dialog.destroy).pack(side="left", padx=6)
-        ttk.Button(btn_row, text="เข้าสู่ระบบ", style="Accent.TButton", command=try_login).pack(side="left", padx=6)
+        cancel_btn = RoundedButton(btn_row, text="ยกเลิก", command=dialog.destroy, style="normal", panel_bg=COLOR_PANEL, height=38)
+        cancel_btn.pack(side="left", padx=6)
+        cancel_btn.canvas.configure(width=110)
+        login_btn = RoundedButton(btn_row, text="เข้าสู่ระบบ", command=try_login, style="accent", panel_bg=COLOR_PANEL, height=38, font=("Noto Sans", 10, "bold"))
+        login_btn.pack(side="left", padx=6)
+        login_btn.canvas.configure(width=110)
 
     def _unlock_admin(self):
         self.admin_authenticated = True
         self.admin_status_var.set("โหมด: ผู้ดูแลระบบ (ปลดล็อกแล้ว)")
-        self.user_id_var.set(next_user_id(self.db))
-        self.pending_rfids = []
-        self.arduino_confirmed_total = None
-        self.registering_rfid = False
-        self._editing_original_name = None
-        self._refresh_pending_rfid_label()
+        # while any admin screen is open, card-based unlock is disabled on the
+        # Arduino (EXIT button still always works) — see ADMIN_LOCK in the .ino
+        self.arduino.send("ADMIN_LOCK")
         self._show_admin_screen()
+        self._show_admin_list()
         self._set_status("เข้าสู่เมนูผู้ดูแลระบบแล้ว", "ok")
 
     def _lock_admin(self):
         self.admin_authenticated = False
         self.registering_rfid = False
         self.arduino.send("IDLE")
+        self.arduino.send("ADMIN_UNLOCK")
         self._show_scan_screen()
         self._arm_idle_timer()
 
-    def _on_toggle_standby_setting(self):
-        self.settings["standby_enabled"] = self.standby_enabled_var.get()
+    def _set_standby_enabled(self, enabled):
+        self.settings["standby_enabled"] = enabled
         save_settings(self.settings)
-        self._set_status(
-            "เปิดใช้งานหน้าพักหน้าจอแล้ว" if self.settings["standby_enabled"] else "ปิดหน้าพักหน้าจอแล้ว",
-            "ok",
-        )
+        self._refresh_standby_toggle()
+        self._set_status("เปิดใช้งานหน้าพักหน้าจอแล้ว" if enabled else "ปิดหน้าพักหน้าจอแล้ว", "ok")
+
+    def _refresh_standby_toggle(self):
+        enabled = self.settings.get("standby_enabled", True)
+        on_style = dict(bg=COLOR_ACCENT, fg="white", activebackground=COLOR_ACCENT_HOVER, activeforeground="white")
+        off_style = dict(bg=COLOR_SURFACE, fg=COLOR_MUTED, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_MUTED)
+        self.standby_on_btn.configure(**(on_style if enabled else off_style))
+        self.standby_off_btn.configure(**(off_style if enabled else on_style))
 
     def _load_gallery(self):
         self.gallery = load_embeddings()
@@ -756,8 +1100,10 @@ class App:
         # only two status colors: green for success, red for failure —
         # anything else (in-progress, informational) stays plain text
         colors = {"normal": COLOR_TEXT, "ok": COLOR_OK, "warn": COLOR_TEXT, "err": COLOR_ERR}
+        accents = {"normal": COLOR_MUTED, "ok": COLOR_OK, "warn": COLOR_WARN, "err": COLOR_ERR}
         self.status_var.set(text)
         self.status_label.configure(fg=colors.get(kind, COLOR_TEXT))
+        self.status_accent.configure(bg=accents.get(kind, COLOR_MUTED))
 
     def _refresh_people_list(self):
         self.people_list.delete(0, tk.END)
@@ -771,36 +1117,28 @@ class App:
                 rfid = rfid_raw or "-"
             uid = info.get("user_id", "----")
             role = info.get("role", ROLE_NORMAL)
+            row_idx = self.people_list.size()
             self.people_list.insert(
                 tk.END,
                 f"  [{uid}] {name}  ({role})   •   RFID: {rfid}   •   รูป: {info.get('face_count', 0)}"
             )
+            row_bg = COLOR_SURFACE if row_idx % 2 == 0 else COLOR_SURFACE_HOVER
+            self.people_list.itemconfig(row_idx, bg=row_bg)
 
     def _on_person_selected(self, event):
         sel = self.people_list.curselection()
         if not sel:
             return
         name = self._person_order[sel[0]]
-        info = self.db[name]
-        self._editing_original_name = name
-
-        self.name_var.set(name)
-        self.user_id_var.set(info.get("user_id", ""))
-        self.role_var.set(info.get("role", ROLE_NORMAL))
-
-        rfid_raw = info.get("rfid") or []
-        self.pending_rfids = [rfid_raw] if isinstance(rfid_raw, str) else list(rfid_raw)
-        self.arduino_confirmed_total = None
-        self._refresh_pending_rfid_label()
-
-        self.registering_rfid = False
-        self.progress.configure(value=0)
-        self._set_status(f"กำลังแก้ไขผู้ใช้ '{name}' — แก้ข้อมูลแล้วกด 'บันทึกผู้ใช้' เพื่ออัปเดต", "normal")
+        self._show_admin_form(name)
 
     def _update_preview(self):
         if self.picam2 is not None:
+            frame = self.frame_grabber.get_frame()  # BGR order (Picamera2's "RGB888" format)
+            if frame is None:
+                self.root.after(150, self._update_preview)
+                return
             try:
-                frame = self.picam2.capture_array()  # BGR order (Picamera2's "RGB888" format)
                 if ROTATE is not None:
                     frame = cv2.rotate(frame, ROTATE)
                 frame_h, frame_w = frame.shape[:2]
@@ -840,30 +1178,33 @@ class App:
                     # green = recognized (access granted), red = stranger / not
                     # recognized yet (access denied)
                     recognized = label_text is not None and label_text != "stranger"
-                    box_color = (79, 255, 140) if recognized else (60, 60, 235)
+                    box_color = (107, 156, 24) if recognized else (48, 59, 214)  # BGR of COLOR_OK / COLOR_ERR
 
                     cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
                     if label_text:
-                        cv2.rectangle(frame, (x, y - 26), (x + w, y), box_color, -1)
+                        cv2.rectangle(frame, (x, y - 28), (x + w, y), box_color, -1)
                         cv2.putText(
-                            frame, label_text, (x + 4, y - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 30, 20), 2, cv2.LINE_AA
+                            frame, label_text, (x + 6, y - 7),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA
                         )
 
-                # only the currently visible screen's preview label needs updating
-                target = self.video_label if self.current_screen == "scan" else self.admin_video_label
-                img_rgb = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                label_w = target.winfo_width()
-                label_h = target.winfo_height()
-                if label_w > 10 and label_h > 10:
-                    img_rgb = _fit_image(img_rgb, label_w, label_h)
-                imgtk = ImageTk.PhotoImage(image=img_rgb)
-                target.imgtk = imgtk
-                target.configure(image=imgtk, text="")
+                # only the scan screen shows a live camera preview — admin
+                # screens (list or form) have none, capture still works via
+                # progress bar / status text alone, just without a live view
+                target = self.video_label if self.current_screen == "scan" else None
+
+                if target is not None:
+                    img_rgb = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    label_w = target.winfo_width()
+                    label_h = target.winfo_height()
+                    if label_w > 10 and label_h > 10:
+                        img_rgb = _fit_image(img_rgb, label_w, label_h)
+                    imgtk = ImageTk.PhotoImage(image=img_rgb)
+                    target.imgtk = imgtk
+                    target.configure(image=imgtk, text="")
             except Exception as e:
                 print(f"[preview] error: {e}", flush=True)
                 self.video_label.configure(text=f"กล้องมีปัญหา: {e}", image="")
-                self.admin_video_label.configure(text=f"กล้องมีปัญหา: {e}", image="")
         self.root.after(150, self._update_preview)
 
     def start_capture(self):
@@ -898,6 +1239,15 @@ class App:
         existing = self.db.get(self._editing_original_name) if self._editing_original_name else None
         registered_at = existing["registered_at"] if existing else datetime.now().isoformat(timespec="seconds")
 
+        # a card removed from the form (✕ button) while editing must also be
+        # removed from the Arduino's EEPROM, not just dropped from people.json
+        if existing:
+            old_rfid_raw = existing.get("rfid") or []
+            old_rfids = [old_rfid_raw] if isinstance(old_rfid_raw, str) else list(old_rfid_raw)
+            for uid in old_rfids:
+                if uid not in self.pending_rfids:
+                    self.arduino.send(f"REMOVE:{uid}")
+
         self.db[name] = {
             "user_id": user_id,
             "role": self.role_var.get(),
@@ -905,28 +1255,56 @@ class App:
             "face_count": face_count,
             "registered_at": registered_at,
         }
-        if self._editing_original_name and self._editing_original_name != name:
+        renamed = self._editing_original_name and self._editing_original_name != name
+        if renamed:
             self.db.pop(self._editing_original_name, None)  # renamed — drop the old key
+            self.gallery.pop(self._editing_original_name, None)  # drop stale embeddings under the old name
         self._editing_original_name = None
 
         save_db(self.db)
-        self._refresh_people_list()
-        self.name_var.set("")
-        self.role_var.set(ROLE_NORMAL)
-        self.user_id_var.set(next_user_id(self.db))
-        self.progress.configure(value=0)
+
+        # push every card currently assigned to this person to the Arduino's
+        # EEPROM — harmless/idempotent for cards already there from the tap
+        # flow (Arduino just replies DUPLICATE), but guarantees the EEPROM
+        # matches people.json for this person without a separate manual sync
+        for uid in self.pending_rfids:
+            self.arduino.send(f"ADD:{uid}")
 
         self.pending_rfids = []
         self.arduino_confirmed_total = None
         self.registering_rfid = False
-        self._refresh_pending_rfid_label()
         self.arduino.send("IDLE")
 
-        if face_count > 0:
-            self._set_status(f"บันทึก {name} แล้ว — กำลังเทรนโมเดล...", "warn")
-            self.retrain()
+        # only recompute embeddings for THIS person, and only if this visit
+        # actually captured new photos — re-training on every save (even a
+        # plain name/role edit) recomputed every other registered person's
+        # embeddings too for nothing
+        if self.captured_count > 0:
+            self._set_status(f"บันทึก {name} แล้ว — กำลังอัปเดตข้อมูลใบหน้า...", "warn")
+            self._update_person_embeddings(name)
+            self._set_status(f"บันทึก {name} แล้ว — อัปเดตข้อมูลใบหน้าเรียบร้อย", "ok")
         else:
-            self._set_status(f"บันทึก {name} แล้ว (ยังไม่มีรูปหน้า — ยังไม่เทรนโมเดล)", "warn")
+            self._set_status(f"บันทึก {name} แล้ว", "ok")
+
+        self._show_admin_list()
+
+    def _update_person_embeddings(self, name):
+        """Recompute embeddings for just this one person from their dataset
+        photos and update only their entry in embeddings.json — see the
+        captured_count check in save_person for why this replaced always
+        calling retrain() (a full rebuild of every registered person)."""
+        out_dir = os.path.join(DATASET_DIR, name)
+        if not os.path.isdir(out_dir):
+            return
+        embeddings = []
+        for fname in sorted(os.listdir(out_dir)):
+            img = cv2.imread(os.path.join(out_dir, fname))
+            if img is None:
+                continue
+            embeddings.append(self.identifier.embed(img))
+        if embeddings:
+            self.gallery[name] = embeddings
+            save_embeddings(self.gallery)
 
     def delete_selected(self):
         sel = self.people_list.curselection()
@@ -950,22 +1328,9 @@ class App:
         else:
             self._set_status(f"ลบ {name} แล้ว", "warn")
 
-    def retrain(self):
-        self._set_status("กำลังเทรนโมเดล...", "warn")
-        self.root.update()
-        result = subprocess.run(
-            [os.path.join(BASE, "venv", "bin", "python3"), os.path.join(BASE, "train_model.py")],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            self._load_gallery()
-            messagebox.showinfo("สำเร็จ", result.stdout)
-            self._set_status("เทรนโมเดลเสร็จแล้ว — พร้อมจดจำใบหน้าแล้ว", "ok")
-        else:
-            messagebox.showerror("ผิดพลาด", result.stderr)
-            self._set_status("เทรนโมเดลล้มเหลว", "err")
-
     def on_close(self):
+        if self.frame_grabber is not None:
+            self.frame_grabber.stop()
         if self.picam2 is not None:
             try:
                 self.picam2.stop()

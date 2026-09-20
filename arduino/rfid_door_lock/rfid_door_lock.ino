@@ -2,13 +2,19 @@
 #include <MFRC522.h>
 #include <EEPROM.h>
 
-#define RST_PIN 9
+#define RST_PIN 5
 #define SS_PIN 10
-#define RELAY_PIN 8
+#define RELAY_PIN A5
 
+// จับคู่ขาสัญญาณและขากราวด์จำลองให้อยู่ใกล้กัน
 #define EXIT_BTN_PIN 3
-#define REG_BTN_PIN  4  
-#define SET_BTN_PIN  5  
+#define EXIT_GND_PIN 2
+
+#define REG_BTN_PIN  4
+#define REG_GND_PIN  6
+
+#define SET_BTN_PIN  9
+#define SET_GND_PIN  8
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
@@ -18,13 +24,15 @@ enum SystemMode {
 };
 SystemMode currentMode = MODE_IDLE;
 
+// true while the Pi is showing any admin screen — card-based unlock is
+// refused in this state (the EXIT button is NOT affected, it always works)
+bool doorLockedByPi = false;
+
 #define MAX_CARDS 20
 
-// กำหนด UID เริ่มต้น (คุณสามารถเพิ่มหรือลดจำนวนในนี้ได้ตามต้องการ)
 const byte defaultUIDs[][4] = {
   {0xA7, 0x56, 0x5B, 0x06}
 };
-// คำนวณจำนวนการ์ดเริ่มต้นอัตโนมัติจากขนาดอาเรย์
 const byte numDefaultUIDs = sizeof(defaultUIDs) / sizeof(defaultUIDs[0]);
 
 // บรรทัดคำสั่งที่กำลังอ่านมาจาก Pi ผ่าน Serial (สร้างทีละตัวอักษรจนเจอ '\n')
@@ -36,13 +44,23 @@ void setup() {
   mfrc522.PCD_Init();
 
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH); 
+  digitalWrite(RELAY_PIN, HIGH);
 
+  // ตั้งค่าปุ่มกด
   pinMode(EXIT_BTN_PIN, INPUT_PULLUP);
   pinMode(REG_BTN_PIN, INPUT_PULLUP);
   pinMode(SET_BTN_PIN, INPUT_PULLUP);
 
-  // ตรวจสอบ EEPROM หากยังไม่เคยบันทึก ให้โหลดค่าเริ่มต้น
+  // เสกขา Digital เป็นกราวด์จำลอง (จ่ายไฟ 0V)
+  pinMode(EXIT_GND_PIN, OUTPUT);
+  digitalWrite(EXIT_GND_PIN, LOW);
+
+  pinMode(REG_GND_PIN, OUTPUT);
+  digitalWrite(REG_GND_PIN, LOW);
+
+  pinMode(SET_GND_PIN, OUTPUT);
+  digitalWrite(SET_GND_PIN, LOW);
+
   if (EEPROM.read(0) == 255 || EEPROM.read(0) > MAX_CARDS) {
     resetEEPROMToDefault();
   }
@@ -53,9 +71,8 @@ void setup() {
   Serial.println("Current Mode: IDLE (Normal Operation)");
 }
 
-// ฟังก์ชันโหลดค่าเริ่มต้นลง EEPROM แบบคำนวณขนาดอัตโนมัติ
 void resetEEPROMToDefault() {
-  EEPROM.write(0, numDefaultUIDs); // บันทึกจำนวนตามจริง
+  EEPROM.write(0, numDefaultUIDs);
   for (int i = 0; i < numDefaultUIDs; i++) {
     for (int j = 0; j < 4; j++) {
       EEPROM.write(1 + (i * 4) + j, defaultUIDs[i][j]);
@@ -139,6 +156,46 @@ bool hexToUidBytes(const String &hex, byte *out) {
   return true;
 }
 
+// เขียนบัตรลง EEPROM ตรงๆจาก UID ที่ Pi ส่งมา โดยไม่ต้องแตะบัตรจริงที่เครื่องอ่าน
+// (ต่างจาก registerNewCard ที่ต้องรอสแกนบัตรจริงในโหมด MODE_REGISTER) — ใช้กู้คืน
+// ตอน Arduino เปลี่ยนเครื่อง/EEPROM โดนล้าง แต่ people.json บน Pi ยังมี UID อยู่ครบ
+// ทำงานอิสระจาก currentMode เลย ไม่ต้องสลับโหมดก่อนเรียกใช้
+void addCardByHex(const String &hex) {
+  byte target[4];
+  if (!hexToUidBytes(hex, target)) {
+    Serial.println("INVALID_UID:" + hex);
+    return;
+  }
+
+  byte totalCards = EEPROM.read(0);
+  for (byte i = 0; i < totalCards; i++) {
+    bool match = true;
+    for (byte j = 0; j < 4; j++) {
+      if (EEPROM.read(1 + (i * 4) + j) != target[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      Serial.println("DUPLICATE:" + hex + ":" + String(totalCards));
+      return;
+    }
+  }
+
+  if (totalCards >= MAX_CARDS) {
+    Serial.println("FULL:" + String(totalCards));
+    return;
+  }
+
+  int address = 1 + (totalCards * 4);
+  for (byte j = 0; j < 4; j++) {
+    EEPROM.write(address + j, target[j]);
+  }
+  EEPROM.write(0, totalCards + 1);
+
+  Serial.println("REGISTERED:" + hex + ":" + String(EEPROM.read(0)));
+}
+
 // ลบบัตร 1 ใบออกจาก EEPROM ตาม UID ที่ Pi สั่งมา (ใช้ตอนลบผู้ใช้ฝั่ง Pi ให้
 // Arduino ไม่ยอมรับบัตรของคนที่ถูกลบไปแล้วต่อ)
 void removeCardByHex(const String &hex) {
@@ -190,14 +247,18 @@ void printUID(const MFRC522::Uid &uid) {
 
 void unlockDoor() {
   Serial.println("Access Granted! Unlocking...");
-  digitalWrite(RELAY_PIN, LOW); 
-  delay(3000); 
-  digitalWrite(RELAY_PIN, HIGH); 
+  digitalWrite(RELAY_PIN, LOW);
+  delay(3000);
+  digitalWrite(RELAY_PIN, HIGH);
   Serial.println("Locked.");
+
+  mfrc522.PCD_Init();
 }
 
-// อ่านคำสั่งจาก Pi ทีละบรรทัด: "REGISTER" เข้าโหมดลงทะเบียน, "IDLE" กลับโหมดปกติ
-// (ทำงานคู่ขนานกับปุ่มจริงบนบอร์ด ไม่ได้แทนที่ — เผื่อ Pi ไม่ได้เชื่อมต่อ/ค้าง)
+// อ่านคำสั่งจาก Pi ทีละบรรทัด: "REGISTER" เข้าโหมดลงทะเบียน, "IDLE" กลับโหมดปกติ,
+// "REMOVE:<hex uid>" ลบบัตรใบนั้นออกจาก EEPROM, "ADD:<hex uid>" เขียนบัตรลง
+// EEPROM ตรงๆโดยไม่ต้องแตะบัตรจริง (กู้คืนตอนเปลี่ยน Arduino/EEPROM โดนล้าง),
+// "CLEAR" ล้างบัตรทั้งหมดออกจาก EEPROM จริงๆ
 void handleSerialCommands() {
   while (Serial.available()) {
     char c = Serial.read();
@@ -206,21 +267,26 @@ void handleSerialCommands() {
       if (serialLine == "REGISTER") {
         currentMode = MODE_REGISTER;
         Serial.println("\n>>> [PI] -> REGISTER MODE (Waiting for new card...) <<<");
-        Serial.println("MODE:REGISTER");
       } else if (serialLine == "IDLE") {
         currentMode = MODE_IDLE;
         Serial.println("\n>>> [PI] -> IDLE MODE (Normal Operation) <<<");
-        Serial.println("MODE:IDLE");
+      } else if (serialLine.startsWith("REMOVE:")) {
+        removeCardByHex(serialLine.substring(7));
+      } else if (serialLine.startsWith("ADD:")) {
+        addCardByHex(serialLine.substring(4));
       } else if (serialLine == "CLEAR") {
-        // ล้างบัตรทั้งหมดออกจริงๆ (ต่างจาก factory reset ที่ยังเหลือบัตร default 1 ใบ)
+        // ล้างบัตรทั้งหมดจริงๆ (ต่างจาก factory reset ที่ยังเหลือบัตร default 1 ใบ) —
+        // ใช้ก่อนซิงค์ทั้งชุดจาก Pi ให้ Arduino เหลือแต่บัตรที่มีเจ้าของใน people.json เท่านั้น
         EEPROM.write(0, 0);
         currentMode = MODE_IDLE;
-        Serial.println("\n>>> [PI] -> CLEARED ALL CARDS <<<");
+        Serial.println("\n>>> [PI] -> ALL CARDS CLEARED <<<");
         Serial.println("CLEARED:0");
-        Serial.println("MODE:IDLE");
-      } else if (serialLine.startsWith("REMOVE:")) {
-        // ลบผู้ใช้ฝั่ง Pi แล้ว สั่งให้ Arduino ลบบัตรใบนั้นออกจาก EEPROM ด้วย
-        removeCardByHex(serialLine.substring(7));
+      } else if (serialLine == "ADMIN_LOCK") {
+        doorLockedByPi = true;
+        Serial.println("\n>>> [PI] -> DOOR LOCKED (admin screen open on Pi) <<<");
+      } else if (serialLine == "ADMIN_UNLOCK") {
+        doorLockedByPi = false;
+        Serial.println("\n>>> [PI] -> DOOR UNLOCKED (admin screen closed) <<<");
       }
       serialLine = "";
     } else if (c != '\r') {
@@ -232,10 +298,10 @@ void handleSerialCommands() {
 void loop() {
   handleSerialCommands();
 
-  // 1. กดปุ่ม REG_BTN ค้างไว้ 5 วินาที เพื่อ Clear Memory (Factory Reset) กลับมาเป็นค่าเริ่มต้น
-  // (เหลือไว้แค่ฟังก์ชันกู้คืนฉุกเฉินนี้ — การเข้าโหมด Register ต้องสั่งผ่าน Pi เท่านั้น
-  // ปุ่มกดสั้นบนบอร์ดจะไม่เข้าโหมด Register ตรงๆ อีกต่อไป กัน EEPROM กับ people.json
-  // บน Pi ไม่ตรงกัน)
+  // กดปุ่ม REG ค้าง 5 วินาที = Factory Reset ฉุกเฉินเท่านั้น (กู้คืนกลับเป็นบัตร
+  // default) — กดสั้นๆ จะไม่เข้าโหมด Register ตรงๆ อีกต่อไป ต้องสั่งผ่าน Pi เท่านั้น
+  // เพราะถ้าลงทะเบียนผ่านปุ่มจริงตรงๆ EEPROM ของ Arduino จะมีบัตรที่ Pi ไม่รู้จักชื่อ
+  // เจ้าของ (ไม่ได้อยู่ใน people.json) ทำให้ข้อมูลสองฝั่งไม่ตรงกัน
   if (digitalRead(REG_BTN_PIN) == LOW) {
     unsigned long pressTime = millis();
 
@@ -249,15 +315,12 @@ void loop() {
     }
   }
 
-  // 2. กดปุ่ม Set เพื่อกลับสู่ Mode Idle
   if (digitalRead(SET_BTN_PIN) == LOW) {
     currentMode = MODE_IDLE;
     Serial.println("\n>>> [SWITCH MODE] -> IDLE MODE (Normal Operation) <<<");
-    Serial.println("MODE:IDLE");
     delay(500);
   }
 
-  // ปุ่ม Exit กดเปิดจากด้านในได้ตลอดเวลา
   if (digitalRead(EXIT_BTN_PIN) == LOW) {
     Serial.println("Exit Button Pressed! Unlocking...");
     unlockDoor();
@@ -265,7 +328,6 @@ void loop() {
     return;
   }
 
-  // 3. อ่านบัตรตาม Mode ปัจจุบัน
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
     return;
   }
@@ -277,7 +339,12 @@ void loop() {
       Serial.println();
 
       if (isAuthorized(mfrc522.uid)) {
-        unlockDoor();
+        if (doorLockedByPi) {
+          Serial.println("Access Denied! (locked - admin screen open on Pi)");
+          delay(1000);
+        } else {
+          unlockDoor();
+        }
       } else {
         Serial.println("Access Denied!");
         delay(1000);

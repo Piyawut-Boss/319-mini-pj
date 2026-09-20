@@ -1,1 +1,3 @@
 SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", ATTRS{serial}=="11227551267165231810", SYMLINK+="arduino_rfid"
+# Arduino Nano clone (CH340 USB-serial, no per-device serial string)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="arduino_rfid"
