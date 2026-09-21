@@ -46,6 +46,7 @@ ROLE_NORMAL = "ผู้ใช้ทั่วไป"
 ROLE_ADMIN = "ผู้ดูแลระบบ"
 
 IDLE_TIMEOUT_MS = 20_000  # auto-return to standby after this much inactivity
+FACE_UNLOCK_COOLDOWN_S = 5.0  # min seconds between auto-unlocks from face recognition
 
 THAI_MONTHS = [
     "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
@@ -456,6 +457,7 @@ class App:
         self._sync_total = 0
         self._sync_progress = 0
         self.door_held_open = False
+        self._last_face_unlock_time = 0.0
 
         self._build_ui()
         self._build_standby_screen()
@@ -1250,6 +1252,18 @@ class App:
                     # recognized yet (access denied)
                     recognized = label_text is not None and label_text != "stranger"
                     box_color = (107, 156, 24) if recognized else (48, 59, 214)  # BGR of COLOR_OK / COLOR_ERR
+
+                    # auto-unlock on a recognized face — only from the actual scan
+                    # screen (never while any admin screen is open, so this can't
+                    # fire during registration/editing regardless of doorLockedByPi)
+                    # and rate-limited so a person standing in frame doesn't spam
+                    # the relay with an OPEN every ~150ms tick
+                    if recognized and self.current_screen == "scan":
+                        now = time.time()
+                        if now - self._last_face_unlock_time >= FACE_UNLOCK_COOLDOWN_S:
+                            self._last_face_unlock_time = now
+                            print(f"[access] recognized {label_text} — opening door", flush=True)
+                            self.arduino.send("OPEN")
 
                     cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
                     if label_text:
