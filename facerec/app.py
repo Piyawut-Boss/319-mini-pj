@@ -51,7 +51,8 @@ ROLE_ADMIN = "ผู้ดูแลระบบ"
 
 IDLE_TIMEOUT_MS = 20_000  # auto-return to standby after this much inactivity
 FACE_UNLOCK_COOLDOWN_S = 5.0  # min seconds between auto-unlocks from face recognition
-STRANGER_NOTIFY_COOLDOWN_S = 10.0  # min seconds between Telegram alerts for an unrecognized face
+STRANGER_LINGER_S = 3.0  # unrecognized face must be continuously present this long before the first alert (avoids alerting on someone just passing by)
+STRANGER_NOTIFY_COOLDOWN_S = 10.0  # min seconds between repeat Telegram alerts while the same stranger keeps lingering
 
 THAI_MONTHS = [
     "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
@@ -513,6 +514,7 @@ class App:
         self.door_held_open = False
         self._last_face_unlock_time = 0.0
         self._last_stranger_notify_time = 0.0
+        self._stranger_since = None
         self.telegram_token_var = tk.StringVar(value=self.settings.get("telegram_bot_token", ""))
         self.telegram_chatid_var = tk.StringVar(value=self.settings.get("telegram_chat_id", ""))
 
@@ -722,7 +724,7 @@ class App:
 
         telegram_frame = ttk.Labelframe(content, text="แจ้งเตือน Telegram", padding=14)
         telegram_frame.pack(fill="x", pady=(0, 20))
-        ttk.Label(telegram_frame, text="ส่งข้อความแจ้งเตือนเมื่อพบคนแปลกหน้า (จำไม่ได้) ที่หน้าประตู").pack(anchor="w", pady=(0, 8))
+        ttk.Label(telegram_frame, text="ส่งข้อความ+รูปแจ้งเตือนเมื่อคนแปลกหน้ายืนค้างหน้าประตู 3 วิขึ้นไป").pack(anchor="w", pady=(0, 8))
 
         telegram_toggle_row = tk.Frame(telegram_frame, bg=COLOR_PANEL)
         telegram_toggle_row.pack(anchor="w")
@@ -1403,6 +1405,7 @@ class App:
                             self.capture_btn.configure(state="normal")
                             self._set_status(f"ถ่ายครบ {FACES_PER_PERSON} รูปแล้ว กด 'บันทึกผู้ใช้' ต่อได้เลย", "ok")
 
+                frame_has_stranger = False
                 for (x, y, w, h, _score) in faces:
                     label_text = None
                     if self.gallery and not self.capturing:
@@ -1431,15 +1434,8 @@ class App:
                             print(f"[access] recognized {label_text} — opening door", flush=True)
                             self.arduino.send("OPEN")
 
-                    # alert on an unrecognized face at the door — rate-limited
-                    # separately from the unlock cooldown above so a stranger
-                    # lingering in frame doesn't spam Telegram every ~150ms tick
-                    if label_text == "stranger" and self.current_screen == "scan":
-                        now = time.time()
-                        if now - self._last_stranger_notify_time >= STRANGER_NOTIFY_COOLDOWN_S:
-                            self._last_stranger_notify_time = now
-                            timestamp = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
-                            self._notify_telegram_photo_async(frame, f"🚨 พบคนแปลกหน้าพยายามเข้าประตู — {timestamp}")
+                    if label_text == "stranger":
+                        frame_has_stranger = True
 
                     cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
                     if label_text:
@@ -1448,6 +1444,26 @@ class App:
                             frame, label_text, (x + 6, y - 7),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA
                         )
+
+                # alert on an unrecognized face that keeps lingering at the
+                # door — only once it's been continuously present for
+                # STRANGER_LINGER_S (so someone just passing through frame
+                # doesn't trigger it), then repeats at most every
+                # STRANGER_NOTIFY_COOLDOWN_S while they keep standing there.
+                # The "since" timer resets the moment no stranger is in
+                # frame, so a fresh linger period is required each time.
+                if self.current_screen == "scan":
+                    now = time.time()
+                    if frame_has_stranger:
+                        if self._stranger_since is None:
+                            self._stranger_since = now
+                        elif (now - self._stranger_since >= STRANGER_LINGER_S
+                                and now - self._last_stranger_notify_time >= STRANGER_NOTIFY_COOLDOWN_S):
+                            self._last_stranger_notify_time = now
+                            timestamp = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+                            self._notify_telegram_photo_async(frame, f"🚨 พบคนแปลกหน้ายืนอยู่หน้าประตู — {timestamp}")
+                    else:
+                        self._stranger_since = None
 
                 # only the scan screen shows a live camera preview — admin
                 # screens (list or form) have none, capture still works via
