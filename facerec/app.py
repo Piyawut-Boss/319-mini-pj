@@ -7,6 +7,10 @@ import signal
 import hashlib
 import threading
 import queue
+import urllib.request
+import urllib.parse
+import urllib.error
+import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -47,6 +51,7 @@ ROLE_ADMIN = "ผู้ดูแลระบบ"
 
 IDLE_TIMEOUT_MS = 20_000  # auto-return to standby after this much inactivity
 FACE_UNLOCK_COOLDOWN_S = 5.0  # min seconds between auto-unlocks from face recognition
+STRANGER_NOTIFY_COOLDOWN_S = 10.0  # min seconds between Telegram alerts for an unrecognized face
 
 THAI_MONTHS = [
     "", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
@@ -201,6 +206,55 @@ def load_settings():
 def save_settings(settings):
     with open(SETTINGS_PATH, "w") as f:
         json.dump(settings, f, indent=2)
+
+
+def send_telegram_message(bot_token, chat_id, text):
+    """Blocking call to the Telegram Bot API — always run this off the
+    Tkinter mainloop thread (see App._notify_telegram_async) since a slow
+    or unreachable network would otherwise freeze the whole UI, same
+    reasoning as FrameGrabber/ArduinoLink running on their own threads."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=5) as resp:
+            if resp.status == 200:
+                return True, "ok"
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, str(e)
+
+
+def send_telegram_photo(bot_token, chat_id, image_bytes, caption=""):
+    """Blocking call to the Telegram Bot API's sendPhoto — same off-thread
+    requirement as send_telegram_message. Builds the multipart/form-data
+    body by hand since urllib has no built-in multipart encoder."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    boundary = "----doorlockphoto" + uuid.uuid4().hex
+    parts = [
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode("utf-8"),
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{caption}\r\n".encode("utf-8"),
+        (
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"snapshot.jpg\"\r\n"
+            f"Content-Type: image/jpeg\r\n\r\n"
+        ).encode("utf-8"),
+        image_bytes,
+        f"\r\n--{boundary}--\r\n".encode("utf-8"),
+    ]
+    body = b"".join(parts)
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers), timeout=10) as resp:
+            if resp.status == 200:
+                return True, "ok"
+            return False, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body_txt = e.read().decode("utf-8", "replace")
+        return False, f"HTTP {e.code}: {body_txt}"
+    except Exception as e:
+        return False, str(e)
 
 
 def next_user_id(db):
@@ -458,6 +512,9 @@ class App:
         self._sync_progress = 0
         self.door_held_open = False
         self._last_face_unlock_time = 0.0
+        self._last_stranger_notify_time = 0.0
+        self.telegram_token_var = tk.StringVar(value=self.settings.get("telegram_bot_token", ""))
+        self.telegram_chatid_var = tk.StringVar(value=self.settings.get("telegram_chat_id", ""))
 
         self._build_ui()
         self._build_standby_screen()
@@ -662,6 +719,47 @@ class App:
             settings_frame, text="🔄 รีเซ็ตและซิงค์บัตร RFID กับ Arduino", command=self._sync_all_cards_to_arduino,
             style="normal", panel_bg=COLOR_PANEL, height=38
         ).pack(fill="x", pady=(16, 0))
+
+        telegram_frame = ttk.Labelframe(content, text="แจ้งเตือน Telegram", padding=14)
+        telegram_frame.pack(fill="x", pady=(0, 20))
+        ttk.Label(telegram_frame, text="ส่งข้อความแจ้งเตือนเมื่อพบคนแปลกหน้า (จำไม่ได้) ที่หน้าประตู").pack(anchor="w", pady=(0, 8))
+
+        telegram_toggle_row = tk.Frame(telegram_frame, bg=COLOR_PANEL)
+        telegram_toggle_row.pack(anchor="w")
+        self.telegram_on_btn = tk.Button(
+            telegram_toggle_row, text="เปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_telegram_enabled(True)
+        )
+        self.telegram_on_btn.pack(side="left", ipady=6)
+        self.telegram_off_btn = tk.Button(
+            telegram_toggle_row, text="ปิด", width=8, font=("Noto Sans", 10, "bold"),
+            relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+            command=lambda: self._set_telegram_enabled(False)
+        )
+        self.telegram_off_btn.pack(side="left", ipady=6, padx=(2, 0))
+        self._refresh_telegram_toggle()
+
+        ttk.Label(telegram_frame, text="Bot Token").pack(anchor="w", pady=(16, 4))
+        telegram_token_entry = ttk.Entry(telegram_frame, textvariable=self.telegram_token_var, show="•")
+        telegram_token_entry.pack(fill="x")
+        telegram_token_entry.bind("<Button-1>", lambda e: self._open_keyboard(self.telegram_token_var, "Bot Token"))
+
+        ttk.Label(telegram_frame, text="Chat ID").pack(anchor="w", pady=(10, 4))
+        telegram_chatid_entry = ttk.Entry(telegram_frame, textvariable=self.telegram_chatid_var)
+        telegram_chatid_entry.pack(fill="x")
+        telegram_chatid_entry.bind("<Button-1>", lambda e: self._open_keyboard(self.telegram_chatid_var, "Chat ID"))
+
+        telegram_btn_row = tk.Frame(telegram_frame, bg=COLOR_PANEL)
+        telegram_btn_row.pack(fill="x", pady=(10, 0))
+        RoundedButton(
+            telegram_btn_row, text="บันทึก", command=self._save_telegram_settings,
+            style="accent", panel_bg=COLOR_PANEL, height=38
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        RoundedButton(
+            telegram_btn_row, text="ทดสอบส่งข้อความ", command=self._test_telegram,
+            style="normal", panel_bg=COLOR_PANEL, height=38
+        ).pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         self._refresh_people_list()
 
@@ -1165,6 +1263,74 @@ class App:
         self.door_hold_on_btn.configure(**(on_style if self.door_held_open else off_style))
         self.door_hold_off_btn.configure(**(off_style if self.door_held_open else on_style))
 
+    def _refresh_telegram_toggle(self):
+        enabled = self.settings.get("telegram_enabled", False)
+        on_style = dict(bg=COLOR_ACCENT, fg="white", activebackground=COLOR_ACCENT_HOVER, activeforeground="white")
+        off_style = dict(bg=COLOR_SURFACE, fg=COLOR_MUTED, activebackground=COLOR_SURFACE_HOVER, activeforeground=COLOR_MUTED)
+        self.telegram_on_btn.configure(**(on_style if enabled else off_style))
+        self.telegram_off_btn.configure(**(off_style if enabled else on_style))
+
+    def _set_telegram_enabled(self, enabled):
+        self.settings["telegram_enabled"] = enabled
+        save_settings(self.settings)
+        self._refresh_telegram_toggle()
+        self._set_status("เปิดใช้งานแจ้งเตือน Telegram แล้ว" if enabled else "ปิดแจ้งเตือน Telegram แล้ว", "ok")
+
+    def _save_telegram_settings(self):
+        self.settings["telegram_bot_token"] = self.telegram_token_var.get().strip()
+        self.settings["telegram_chat_id"] = self.telegram_chatid_var.get().strip()
+        save_settings(self.settings)
+        self._set_status("บันทึกการตั้งค่า Telegram แล้ว", "ok")
+
+    def _test_telegram(self):
+        bot_token = self.telegram_token_var.get().strip()
+        chat_id = self.telegram_chatid_var.get().strip()
+        if not bot_token or not chat_id:
+            messagebox.showerror("ผิดพลาด", "กรอก Bot Token และ Chat ID ก่อนทดสอบ")
+            return
+        self._set_status("กำลังส่งข้อความทดสอบ...", "normal")
+        threading.Thread(
+            target=self._send_telegram_bg, args=(bot_token, chat_id, "🔔 ทดสอบการแจ้งเตือนจากระบบ Door Access"),
+            daemon=True
+        ).start()
+
+    def _send_telegram_bg(self, bot_token, chat_id, text):
+        ok, detail = send_telegram_message(bot_token, chat_id, text)
+        if ok:
+            print(f"[telegram] sent: {text!r}", flush=True)
+            self.root.after(0, lambda: self._set_status("ส่งข้อความ Telegram สำเร็จ", "ok"))
+        else:
+            print(f"[telegram] failed: {detail}", flush=True)
+            self.root.after(0, lambda: self._set_status(f"ส่งข้อความ Telegram ไม่สำเร็จ: {detail}", "err"))
+
+    def _notify_telegram_photo_async(self, frame, caption):
+        """Same enabled/token/chat_id gate as _notify_telegram_async, plus
+        the JPEG encode — both cheap, so done on the caller's thread (the
+        Tkinter mainloop, via _update_preview); only the network call runs
+        in the background thread."""
+        if not self.settings.get("telegram_enabled", False):
+            return
+        bot_token = self.settings.get("telegram_bot_token", "")
+        chat_id = self.settings.get("telegram_chat_id", "")
+        if not bot_token or not chat_id:
+            return
+        ok, jpg = cv2.imencode(".jpg", frame)
+        if not ok:
+            return
+        threading.Thread(
+            target=self._send_telegram_photo_bg, args=(bot_token, chat_id, jpg.tobytes(), caption),
+            daemon=True
+        ).start()
+
+    def _send_telegram_photo_bg(self, bot_token, chat_id, image_bytes, caption):
+        ok, detail = send_telegram_photo(bot_token, chat_id, image_bytes, caption)
+        if ok:
+            print(f"[telegram] sent photo: {caption!r}", flush=True)
+            self.root.after(0, lambda: self._set_status("ส่งรูป Telegram สำเร็จ", "ok"))
+        else:
+            print(f"[telegram] photo failed: {detail}", flush=True)
+            self.root.after(0, lambda: self._set_status(f"ส่งรูป Telegram ไม่สำเร็จ: {detail}", "err"))
+
     def _load_gallery(self):
         self.gallery = load_embeddings()
         print(f"[gallery] loaded, {len(self.gallery)} people: {list(self.gallery.keys())}", flush=True)
@@ -1264,6 +1430,16 @@ class App:
                             self._last_face_unlock_time = now
                             print(f"[access] recognized {label_text} — opening door", flush=True)
                             self.arduino.send("OPEN")
+
+                    # alert on an unrecognized face at the door — rate-limited
+                    # separately from the unlock cooldown above so a stranger
+                    # lingering in frame doesn't spam Telegram every ~150ms tick
+                    if label_text == "stranger" and self.current_screen == "scan":
+                        now = time.time()
+                        if now - self._last_stranger_notify_time >= STRANGER_NOTIFY_COOLDOWN_S:
+                            self._last_stranger_notify_time = now
+                            timestamp = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+                            self._notify_telegram_photo_async(frame, f"🚨 พบคนแปลกหน้าพยายามเข้าประตู — {timestamp}")
 
                     cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
                     if label_text:
