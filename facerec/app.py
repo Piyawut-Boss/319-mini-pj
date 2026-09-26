@@ -667,10 +667,6 @@ class App:
         list_scrollbar.pack(side="right", fill="y")
         self.people_list.configure(yscrollcommand=list_scrollbar.set)
 
-        RoundedButton(
-            list_frame, text="ลบผู้ใช้ที่เลือก", command=self.delete_selected, style="danger", panel_bg=COLOR_PANEL, height=38
-        ).pack(fill="x", pady=(8, 0))
-
         settings_frame = ttk.Labelframe(content, text="ตั้งค่าระบบ", padding=14)
         settings_frame.pack(fill="x", pady=(0, 20))
         ttk.Label(settings_frame, text="หน้าพักหน้าจอ (Standby)").pack(anchor="w", pady=(0, 8))
@@ -848,6 +844,13 @@ class App:
             form, text="บันทึกผู้ใช้", command=self.save_person, style="accent", panel_bg=COLOR_PANEL, font=("Noto Sans", 10, "bold")
         ).grid(row=9, column=0, columnspan=2, sticky="ew")
 
+        # only shown when editing an existing user (see _show_admin_form) —
+        # adding a new user has nothing to delete yet
+        self.delete_user_btn = RoundedButton(
+            form, text="ลบผู้ใช้นี้", command=self._delete_current_user, style="danger", panel_bg=COLOR_PANEL, height=38
+        )
+        self.delete_user_btn.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
     def _show_scan_screen(self):
         self.admin_screen.place_forget()
         self.scan_screen.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -885,12 +888,14 @@ class App:
             self.pending_rfids = [rfid_raw] if isinstance(rfid_raw, str) else list(rfid_raw)
             self.user_form_frame.configure(text=f"แก้ไขผู้ใช้: {editing_name}")
             self._set_status(f"กำลังแก้ไขผู้ใช้ '{editing_name}' — แก้ข้อมูลแล้วกด 'บันทึกผู้ใช้' เพื่ออัปเดต", "normal")
+            self.delete_user_btn.grid()
         else:
             self.name_var.set("")
             self.user_id_var.set(next_user_id(self.db))
             self.role_var.set(ROLE_NORMAL)
             self.user_form_frame.configure(text="เพิ่มผู้ใช้ใหม่")
             self._set_status("กรอกข้อมูลผู้ใช้ใหม่ ถ่ายรูป และลงทะเบียนบัตรได้เลย", "normal")
+            self.delete_user_btn.grid_remove()
 
         self._refresh_pending_rfid_label()
         self.admin_list_page.place_forget()
@@ -1583,12 +1588,10 @@ class App:
             self.gallery[name] = embeddings
             save_embeddings(self.gallery)
 
-    def delete_selected(self):
-        sel = self.people_list.curselection()
-        if not sel:
-            messagebox.showwarning("แจ้งเตือน", "กรุณาเลือกผู้ใช้ที่ต้องการลบจากรายการ")
+    def _delete_current_user(self):
+        name = self._editing_original_name
+        if not name:
             return
-        name = self._person_order[sel[0]]
         if not messagebox.askyesno("ยืนยันการลบ", f"ลบผู้ใช้ '{name}' ออกจากระบบ?"):
             return
 
@@ -1599,7 +1602,8 @@ class App:
 
         self.db.pop(name, None)
         save_db(self.db)
-        self._refresh_people_list()
+        self._editing_original_name = None
+        self._show_admin_list()
         if uids:
             self._set_status(f"ลบ {name} แล้ว — สั่งลบบัตร {len(uids)} ใบออกจาก Arduino ด้วย", "warn")
         else:
