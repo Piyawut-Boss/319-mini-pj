@@ -501,6 +501,7 @@ class App:
         self._load_gallery()
 
         self._idle_after_id = None
+        self._standby_active = False
 
         self.picam2 = None
         if Picamera2 is not None:
@@ -959,6 +960,7 @@ class App:
 
     def _wake_from_standby(self):
         self.standby_frame.place_forget()
+        self._standby_active = False
         self._arm_idle_timer()
 
     def _go_standby(self):
@@ -969,6 +971,7 @@ class App:
             return
         self.standby_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.standby_frame.lift()
+        self._standby_active = True
 
     def _arm_idle_timer(self):
         if self._idle_after_id is not None:
@@ -1468,14 +1471,18 @@ class App:
 
                 # auto-unlock on a recognized face — only from the actual scan
                 # screen (never while any admin screen is open, so this can't
-                # fire during registration/editing regardless of doorLockedByPi).
-                # Requires the SAME name recognized continuously for
-                # FACE_UNLOCK_CONFIRM_S first (a single noisy frame matching
-                # the wrong person shouldn't be enough to open the door — see
-                # the MATCH_THRESHOLD comment in face_engine.py for why this
-                # was added), then rate-limited by FACE_UNLOCK_COOLDOWN_S so a
-                # person standing in frame doesn't spam the relay.
-                if self.current_screen == "scan":
+                # fire during registration/editing regardless of doorLockedByPi)
+                # and never while the standby screen is covering it (waking
+                # the screen first is a deliberate, required step to unlock —
+                # detection/alerting below still runs during standby, only
+                # the unlock itself is gated). Requires the SAME name
+                # recognized continuously for FACE_UNLOCK_CONFIRM_S first (a
+                # single noisy frame matching the wrong person shouldn't be
+                # enough to open the door — see the MATCH_THRESHOLD comment
+                # in face_engine.py for why this was added), then
+                # rate-limited by FACE_UNLOCK_COOLDOWN_S so a person standing
+                # in frame doesn't spam the relay.
+                if self.current_screen == "scan" and not self._standby_active:
                     now = time.time()
                     if frame_recognized_name is not None:
                         if self._unlock_candidate_name != frame_recognized_name:
