@@ -325,6 +325,16 @@ class OnScreenKeyboard(tk.Toplevel):
             relief="flat", bd=0, command=self.destroy
         ).pack(side="left", padx=2)
 
+        # dock to the bottom of the screen instead of the default
+        # window-manager placement, which on this kiosk screen tended to
+        # land the keyboard right on top of whatever entry field/dialog
+        # called it, hiding what was being typed
+        self.update_idletasks()
+        kb_w, kb_h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = (self.winfo_screenwidth() - kb_w) // 2
+        y = self.winfo_screenheight() - kb_h - 10
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+
     def _toggle_shift(self):
         self.shift = not self.shift
         for btn in self.key_buttons:
@@ -1198,6 +1208,13 @@ class App:
         login_btn = RoundedButton(btn_row, text="เข้าสู่ระบบ", command=try_login, style="accent", panel_bg=COLOR_PANEL, height=38, font=("Noto Sans", 10, "bold"))
         login_btn.pack(side="left", padx=6)
         login_btn.canvas.configure(width=110)
+
+        # pin near the top of the screen — the on-screen keyboard docks to
+        # the bottom (see OnScreenKeyboard), so this guarantees they never
+        # overlap and hide the password entry
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() - dialog.winfo_reqwidth()) // 2
+        dialog.geometry(f"+{max(0, x)}+20")
 
     def _unlock_admin(self):
         self.admin_authenticated = True
