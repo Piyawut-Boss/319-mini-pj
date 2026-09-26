@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import fcntl
 import signal
 import hashlib
@@ -1602,6 +1603,18 @@ class App:
 
         self.db.pop(name, None)
         save_db(self.db)
+
+        # without this, the deleted person's face still unlocks the door —
+        # people.json alone isn't consulted for face recognition, only
+        # self.gallery (in-memory) / embeddings.json (on disk) are
+        self.gallery.pop(name, None)
+        save_embeddings(self.gallery)
+
+        # also drop their training photos so a future train_model.py run
+        # (which rebuilds embeddings.json from dataset/ alone, with no
+        # cross-check against people.json) can't resurrect them
+        shutil.rmtree(os.path.join(DATASET_DIR, name), ignore_errors=True)
+
         self._editing_original_name = None
         self._show_admin_list()
         if uids:
