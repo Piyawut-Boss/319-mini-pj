@@ -265,10 +265,18 @@ def next_user_id(db):
     return f"{(max(used) + 1) if used else 1:04d}"
 
 
-class OnScreenKeyboard(tk.Toplevel):
+class OnScreenKeyboard(tk.Frame):
     """A simple QWERTY touch keyboard that types into whichever Entry
     called it. Not exhaustive (English layout only) but enough for a
-    kiosk touchscreen where no physical keyboard is attached."""
+    kiosk touchscreen where no physical keyboard is attached.
+
+    This used to be a tk.Toplevel positioned with .geometry("+x+y"), but
+    labwc doesn't reliably honor a Toplevel's requested screen position
+    (verified: asked for +10+10, it landed at +10+62) — the keyboard kept
+    landing on top of whatever entry field called it, hiding what was
+    typed. Embedding it as a Frame placed inside the root window instead
+    sidesteps the window manager entirely: .place() is relative to the
+    parent widget, not the screen, so it always docks to the same spot."""
 
     ROWS = [
         list("1234567890"),
@@ -278,13 +286,13 @@ class OnScreenKeyboard(tk.Toplevel):
     ]
 
     def __init__(self, parent, entry_var, title="แป้นพิมพ์"):
-        super().__init__(parent)
+        super().__init__(parent, bg=COLOR_PANEL, highlightbackground=COLOR_BORDER, highlightthickness=1)
         self.entry_var = entry_var
         self.shift = False
-        self.title(title)
-        self.configure(bg=COLOR_PANEL)
-        self.transient(parent)
-        self.resizable(False, False)
+
+        tk.Label(
+            self, text=title, font=("Noto Sans", 10, "bold"), bg=COLOR_PANEL, fg=COLOR_TEXT
+        ).pack(anchor="w", padx=10, pady=(8, 0))
 
         self.key_buttons = []
         body = tk.Frame(self, bg=COLOR_PANEL, padx=10, pady=10)
@@ -325,15 +333,11 @@ class OnScreenKeyboard(tk.Toplevel):
             relief="flat", bd=0, command=self.destroy
         ).pack(side="left", padx=2)
 
-        # dock to the bottom of the screen instead of the default
-        # window-manager placement, which on this kiosk screen tended to
-        # land the keyboard right on top of whatever entry field/dialog
-        # called it, hiding what was being typed
-        self.update_idletasks()
-        kb_w, kb_h = self.winfo_reqwidth(), self.winfo_reqheight()
-        x = (self.winfo_screenwidth() - kb_w) // 2
-        y = self.winfo_screenheight() - kb_h - 10
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        # dock to the bottom-center of the root window and raise above
+        # whatever screen (scan/admin list/admin form/etc.) is currently
+        # showing, since those are all placed inside root too
+        self.place(relx=0.5, rely=1.0, anchor="s", y=-10)
+        self.lift()
 
     def _toggle_shift(self):
         self.shift = not self.shift
@@ -1171,10 +1175,13 @@ class App:
         self._open_admin_auth_dialog()
 
     def _open_admin_auth_dialog(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("ยืนยันสิทธิ์ผู้ดูแลระบบ")
-        dialog.configure(bg=COLOR_PANEL)
-        dialog.transient(self.root)
+        # embedded overlay, not a tk.Toplevel — same reasoning as
+        # OnScreenKeyboard: labwc doesn't reliably honor a Toplevel's
+        # requested screen position, so a separate popup window could land
+        # anywhere, including on top of the keyboard it needs to coexist
+        # with. Pinned to the top of root; the keyboard docks to the
+        # bottom, so the two can never overlap.
+        dialog = tk.Frame(self.root, bg=COLOR_PANEL, highlightbackground=COLOR_BORDER, highlightthickness=1)
 
         tk.Label(
             dialog, text="ใส่รหัสผ่านผู้ดูแลระบบ", font=("Noto Sans", 12, "bold"),
@@ -1209,12 +1216,8 @@ class App:
         login_btn.pack(side="left", padx=6)
         login_btn.canvas.configure(width=110)
 
-        # pin near the top of the screen — the on-screen keyboard docks to
-        # the bottom (see OnScreenKeyboard), so this guarantees they never
-        # overlap and hide the password entry
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() - dialog.winfo_reqwidth()) // 2
-        dialog.geometry(f"+{max(0, x)}+20")
+        dialog.place(relx=0.5, rely=0.0, anchor="n", y=20)
+        dialog.lift()
 
     def _unlock_admin(self):
         self.admin_authenticated = True
