@@ -462,8 +462,8 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("ระบบสแกนใบหน้า - Access Control")
-        root.geometry("1024x600")
-        root.minsize(700, 400)
+        root.geometry("600x1024")
+        root.minsize(400, 700)
         root.configure(bg=COLOR_BG)
 
         self._setup_style()
