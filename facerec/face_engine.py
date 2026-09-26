@@ -11,8 +11,18 @@ SFACE_MODEL_PATH = os.path.join(BASE, "models", "face_recognition_sface_2021dec.
 YOLO_MODEL_PATH = os.path.join(BASE, "models", "yolo26n_face.onnx")
 EMBEDDINGS_PATH = os.path.join(BASE, "embeddings.json")
 
-# OpenCV Zoo's own recommended cosine-similarity accept threshold for this model.
-MATCH_THRESHOLD = 0.363
+# OpenCV Zoo's own recommended cosine-similarity accept threshold for this
+# model is 0.363, tuned for 1:1 verification. This deployment does 1:N
+# identification instead (best score across every stored photo of every
+# registered person), which inflates the false-accept rate versus that
+# benchmark — measured directly against this project's own dataset/ photos
+# (2026-09-27, boss vs view, 20 photos each, no landmark alignment): impostor
+# cosine scores ranged up to 0.409, already above 0.363, matching a reported
+# real-world false accept (a stranger unlocking the door). Raised with margin
+# above that observed worst case; genuine same-person matches were previously
+# verified in the 0.86-0.94 range (see FaceIdentifier docstring below), so
+# there's still large headroom before this risks rejecting real matches.
+MATCH_THRESHOLD = 0.45
 
 YOLO_INPUT_SIZE = 640
 YOLO_CONF_THRESHOLD = 0.4

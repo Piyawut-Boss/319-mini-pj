@@ -52,6 +52,7 @@ ROLE_ADMIN = "ผู้ดูแลระบบ"
 
 IDLE_TIMEOUT_MS = 20_000  # auto-return to standby after this much inactivity
 FACE_UNLOCK_COOLDOWN_S = 5.0  # min seconds between auto-unlocks from face recognition
+FACE_UNLOCK_CONFIRM_S = 0.6  # same identity must be recognized this long continuously before unlocking (filters out a single noisy frame flipping to the wrong name)
 STRANGER_LINGER_S = 3.0  # unrecognized face must be continuously present this long before the first alert (avoids alerting on someone just passing by)
 STRANGER_NOTIFY_COOLDOWN_S = 10.0  # min seconds between repeat Telegram alerts while the same stranger keeps lingering
 
@@ -514,6 +515,8 @@ class App:
         self._sync_progress = 0
         self.door_held_open = False
         self._last_face_unlock_time = 0.0
+        self._unlock_candidate_name = None
+        self._unlock_candidate_since = 0.0
         self._last_stranger_notify_time = 0.0
         self._stranger_since = None
         self.telegram_token_var = tk.StringVar(value=self.settings.get("telegram_bot_token", ""))
@@ -1412,6 +1415,7 @@ class App:
                             self._set_status(f"ถ่ายครบ {FACES_PER_PERSON} รูปแล้ว กด 'บันทึกผู้ใช้' ต่อได้เลย", "ok")
 
                 frame_has_stranger = False
+                frame_recognized_name = None
                 for (x, y, w, h, _score) in faces:
                     label_text = None
                     if self.gallery and not self.capturing:
@@ -1428,17 +1432,8 @@ class App:
                     recognized = label_text is not None and label_text != "stranger"
                     box_color = (107, 156, 24) if recognized else (48, 59, 214)  # BGR of COLOR_OK / COLOR_ERR
 
-                    # auto-unlock on a recognized face — only from the actual scan
-                    # screen (never while any admin screen is open, so this can't
-                    # fire during registration/editing regardless of doorLockedByPi)
-                    # and rate-limited so a person standing in frame doesn't spam
-                    # the relay with an OPEN every ~150ms tick
-                    if recognized and self.current_screen == "scan":
-                        now = time.time()
-                        if now - self._last_face_unlock_time >= FACE_UNLOCK_COOLDOWN_S:
-                            self._last_face_unlock_time = now
-                            print(f"[access] recognized {label_text} — opening door", flush=True)
-                            self.arduino.send("OPEN")
+                    if recognized:
+                        frame_recognized_name = label_text
 
                     if label_text == "stranger":
                         frame_has_stranger = True
@@ -1450,6 +1445,29 @@ class App:
                             frame, label_text, (x + 6, y - 7),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA
                         )
+
+                # auto-unlock on a recognized face — only from the actual scan
+                # screen (never while any admin screen is open, so this can't
+                # fire during registration/editing regardless of doorLockedByPi).
+                # Requires the SAME name recognized continuously for
+                # FACE_UNLOCK_CONFIRM_S first (a single noisy frame matching
+                # the wrong person shouldn't be enough to open the door — see
+                # the MATCH_THRESHOLD comment in face_engine.py for why this
+                # was added), then rate-limited by FACE_UNLOCK_COOLDOWN_S so a
+                # person standing in frame doesn't spam the relay.
+                if self.current_screen == "scan":
+                    now = time.time()
+                    if frame_recognized_name is not None:
+                        if self._unlock_candidate_name != frame_recognized_name:
+                            self._unlock_candidate_name = frame_recognized_name
+                            self._unlock_candidate_since = now
+                        elif (now - self._unlock_candidate_since >= FACE_UNLOCK_CONFIRM_S
+                                and now - self._last_face_unlock_time >= FACE_UNLOCK_COOLDOWN_S):
+                            self._last_face_unlock_time = now
+                            print(f"[access] recognized {frame_recognized_name} — opening door", flush=True)
+                            self.arduino.send("OPEN")
+                    else:
+                        self._unlock_candidate_name = None
 
                 # alert on an unrecognized face that keeps lingering at the
                 # door — only once it's been continuously present for
